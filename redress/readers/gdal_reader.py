@@ -13,6 +13,8 @@ from pyproj import Proj, transform
 from redress.geospatial import gdal_ops
 from redress.inputs.products import Dem
 
+gdal.UseExceptions()
+
 
 def open_product(inpath):
     """Open product with GDAL.

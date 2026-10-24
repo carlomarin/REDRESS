@@ -98,7 +98,10 @@ class Test_horizons(object):
 
         distance = px * np.sqrt(ygrid**2+xgrid**2)
         azimuth = np.degrees(np.arctan2(xgrid, ygrid))
-        elevation = np.degrees(np.arctan(height / distance))
+        slope = np.divide(height, distance,
+                          out=np.zeros_like(height),
+                          where=distance != 0)
+        elevation = np.degrees(np.arctan(slope))
 
         elevation[ycoord, xcoord] = 0  # To avoid NaN
 

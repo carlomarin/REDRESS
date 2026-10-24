@@ -238,6 +238,11 @@ def dozier_horizon(dem_array, dem_pixel_size, phi):
             A.append(dem_array[y + M1, x + N1])
             D.append(dx * x * sin(phi) + dy * y * cos(phi))
 
+        # Convert profiles before entering Numba-compiled functions. Passing
+        # Python lists relies on Numba's deprecated reflected-list support.
+        A = np.asarray(A, dtype=np.float64)
+        D = np.asarray(D, dtype=np.float64)
+
         # Use fast algorithms for the forward and backward directions
         Hf = hrz_fwd_nb(A, D)
         Hb = hrz_bwd_nb(A, D)
@@ -277,3 +282,4 @@ def dozier_horizon(dem_array, dem_pixel_size, phi):
                     )
                 )
     return Eh, Dh
+
