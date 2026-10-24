@@ -8,7 +8,7 @@ M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 import importlib
 import xarray as xr
 from redress.geospatial import gdal_ops
-from redress.inputs.sentinel2 import sentinel2_bands
+from redress.inputs.sentinel2 import sentinel2_bands, sentinel2_metadata
 
 
 def import_reader(reader):

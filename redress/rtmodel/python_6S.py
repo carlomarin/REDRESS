@@ -14,20 +14,16 @@ class rtmodel(object):
     def __init__(self):
         self.outputs = None
 
-    def run(self, sza, saa, vza, vaa, wvl, alt, aero,
+    def run(self, sza, saa, vza, vaa, wavelength, alt, aero,
             aod=0.1, refl=0.99, water=0.05, ozone=0.30, atmo=None, atcor=False,
             ):
-        """ Run PY6S
-        date = datetime object specifying the day and month of acquisition
-        lat = latitude of point considered (in degrees)
-        sza, saa, vza, vaa = viewing angles input in radians
-        wvl = wavelength in namometers
-        alt_km =
-        profile has to be one of the following:
-            """
+        """Run Py6S for one wavelength or one spectral response.
 
-        # Convert nanometer input into um for the model
-        wvl_um = wvl / 1000
+        ``wavelength`` may be a scalar wavelength in nanometers or a Py6S
+        predefined wavelength tuple. Angles are expressed in radians and
+        altitude in meters.
+        """
+
         alt_km = alt / 1000
 
         # Build aero profiles
@@ -61,7 +57,16 @@ class rtmodel(object):
         s.altitudes.set_target_custom_altitude(alt_km)
         s.altitudes.set_sensor_satellite_level()
 
-        s.wavelength = ps.Wavelength(wvl_um)  # Set wavelength in um
+        if np.isscalar(wavelength):
+            s.wavelength = ps.Wavelength(float(wavelength) / 1000.0)
+        else:
+            try:
+                s.wavelength = ps.Wavelength(wavelength)
+            except (TypeError, ValueError, IndexError) as error:
+                raise TypeError(
+                    "wavelength must be a scalar value in nanometers or a "
+                    "Py6S predefined wavelength tuple"
+                ) from error
 
         # Atmosphere parameters
         if atmo is None:
@@ -101,3 +106,4 @@ class rtmodel(object):
         s.run()  # Run Py6S
 
         self.outputs = s.outputs
+

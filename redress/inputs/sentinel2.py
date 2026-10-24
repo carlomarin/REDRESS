@@ -151,6 +151,49 @@ class Sentinel2Band:
         )
         return float(weighted_integral / response_integral)
 
+    def integrate_spectral_values(
+        self,
+        values: np.ndarray,
+        axis: int = 0,
+    ) -> np.ndarray:
+        """Integrate spectral values using the MSI response function.
+
+        Parameters
+        ----------
+        values
+            Values evaluated at :attr:`wavelength_nm`. The length of
+            ``axis`` must equal the number of response samples.
+        axis
+            Spectral axis in ``values``.
+        """
+
+        values = np.asarray(values, dtype=np.float64)
+        if values.ndim == 0:
+            raise ValueError("values must contain a spectral axis")
+        if not -values.ndim <= axis < values.ndim:
+            raise ValueError(
+                f"axis {axis} is invalid for an array with "
+                f"{values.ndim} dimensions"
+            )
+        axis %= values.ndim
+        response = self.spectral_response
+
+        if values.shape[axis] != response.size:
+            raise ValueError(
+                f"Spectral axis for {self.platform} {self.name} contains "
+                f"{values.shape[axis]} samples; expected {response.size}."
+            )
+
+        response_shape = [1] * values.ndim
+        response_shape[axis] = response.size
+        weighted_values = values * response.reshape(response_shape)
+
+        numerator = np.trapezoid(
+            weighted_values, self.wavelength_nm, axis=axis
+        )
+        denominator = np.trapezoid(response, self.wavelength_nm)
+        return numerator / denominator
+
 
 def sentinel2_bands(
     platform: str,
@@ -164,6 +207,8 @@ def sentinel2_bands(
     else:
         names = tuple(normalize_sentinel2_band_name(name) for name in band_names)
 
+    if not names:
+        raise ValueError("Sentinel-2 band selection cannot be empty.")
     if len(names) != len(set(names)):
         raise ValueError("Sentinel-2 band selection contains duplicate bands.")
 
@@ -181,3 +226,27 @@ def sentinel2_bands(
         )
 
     return tuple(definitions)
+
+
+def sentinel2_metadata(
+    platform: str,
+    band_names: Iterable[str] | None = None,
+) -> dict:
+    """Return Sentinel-2 metadata accepted by :class:`products.Model`.
+
+    The numeric ``wavelengths`` entry is retained for compatibility and for
+    concise labels. The forward model uses ``band_definitions`` to access the
+    full spectral response of each band.
+    """
+
+    definitions = sentinel2_bands(platform, band_names)
+    return {
+        "sensor": "MSI",
+        "platform": definitions[0].platform,
+        "bandlist": [band.name for band in definitions],
+        "wavelengths": [band.effective_wavelength_nm for band in definitions],
+        "native_resolution_m": [
+            band.native_resolution_m for band in definitions
+        ],
+        "band_definitions": definitions,
+    }

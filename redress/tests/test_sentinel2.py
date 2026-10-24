@@ -9,6 +9,7 @@ from redress.inputs.sentinel2 import (
     SENTINEL2_BAND_NAMES,
     normalize_sentinel2_platform,
     sentinel2_bands,
+    sentinel2_metadata,
 )
 
 
@@ -45,3 +46,31 @@ def test_unsupported_platform_is_rejected(platform):
 def test_duplicate_band_selection_is_rejected():
     with pytest.raises(ValueError, match="duplicate bands"):
         sentinel2_bands("S2B", ["B02", "2"])
+
+
+def test_empty_band_selection_is_rejected():
+    with pytest.raises(ValueError, match="cannot be empty"):
+        sentinel2_bands("S2B", [])
+
+
+def test_spectral_integration_uses_the_band_response():
+    band = sentinel2_bands("S2B", ["B05"])[0]
+
+    constant = np.full(band.wavelength_nm.size, 0.75)
+    linear = band.wavelength_nm.copy()
+
+    assert band.integrate_spectral_values(constant) == pytest.approx(0.75)
+    assert band.integrate_spectral_values(linear) == pytest.approx(
+        band.effective_wavelength_nm
+    )
+
+
+def test_metadata_contains_model_ready_band_definitions():
+    metadata = sentinel2_metadata("S2B", ["B02", "B03", "B11"])
+
+    assert metadata["sensor"] == "MSI"
+    assert metadata["platform"] == "S2B"
+    assert metadata["bandlist"] == ["B02", "B03", "B11"]
+    assert metadata["native_resolution_m"] == [10, 10, 20]
+    assert len(metadata["wavelengths"]) == 3
+    assert len(metadata["band_definitions"]) == 3

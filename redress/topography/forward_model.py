@@ -96,6 +96,7 @@ def iterative_radiance(
     tw=5,
     aw=7,
     dif_anis=False,
+    rt_wavelength=None,
 ):
     """Iterative solver for TOA radiance
     """
@@ -151,12 +152,17 @@ def iterative_radiance(
     l_toa = np.zeros_like(bhr)
     l_toa = np.expand_dims(l_toa, axis=2)
 
+    # The scalar wavelength is used for diagnostics and backward
+    # compatibility. A sensor response can be supplied separately for Py6S.
+    if rt_wavelength is None:
+        rt_wavelength = wavelength
+
     # Call the radiative transfer class
     rt_model.run(angles["SZA"].data.mean(),
                  angles["SAA"].data.mean(),
                  angles["VZA"].data.mean(),
                  angles["VAA"].data.mean(),
-                 wavelength,
+                 rt_wavelength,
                  np.nanmean(topo_bands["altitude"].data),
                  rt_options["aerosol_model"],
                  aod=rt_options["aod"],
@@ -173,7 +179,7 @@ def iterative_radiance(
                  angles["VAA"].data.mean(),
                  angles["SZA"].data.mean(),
                  angles["SAA"].data.mean(),
-                 wavelength,
+                 rt_wavelength,
                  np.nanmean(topo_bands["altitude"].data),
                  rt_options["aerosol_model"],
                  aod=rt_options["aod"],
@@ -340,3 +346,4 @@ def iterative_radiance(
         i += 1
 
     return l_toa[:, :, -1]
+

@@ -11,6 +11,7 @@ from scipy.ndimage import median_filter
 from redress.topography.horizon import dozier_horizon
 from redress.topography import dem_products
 from redress.optics import snow
+from redress.inputs.sentinel2 import sentinel2_metadata
 from redress.topography.forward_model import Cases, iterative_radiance
 
 
@@ -203,6 +204,19 @@ class Model(object):
 
         self.rt_model = getattr(module, "rtmodel")
 
+    def set_sentinel2(self, platform, band_names=None):
+        """Configure the model for Sentinel-2 MSI spectral bands.
+
+        Parameters
+        ----------
+        platform : str
+            Sentinel-2 platform identifier, currently ``S2A`` or ``S2B``.
+        band_names : iterable of str, optional
+            MSI bands to simulate. All 13 bands are used when omitted.
+        """
+
+        self.meta = sentinel2_metadata(platform, band_names)
+
     def set_rt_options(self, aero, aod=0.1, refl=0.99, water=0.05,
                        ozone=0.3, atmos=None, atcor=False):
         """Set the atmopheric conditions as entry options for the RT Model."""
@@ -212,7 +226,7 @@ class Model(object):
                                 "atcor": atcor})
 
     def compute_albedo(self):
-        if not self.ssa:
+        if self.ssa is None:
             raise ValueError("The ssa of snow hasn't been set!")
 
         if not self.rt_model:
@@ -222,15 +236,30 @@ class Model(object):
             raise ValueError("The input options to run the RT model haven't"
                              " been set.")
 
-        # Calculate dirdiff for the moment calculate for the mean over the
-        #  scene
-        for wvl in self.meta["wavelengths"]:
+        self.difftot = []
+        self.albedo = {"total": [], "direct": [], "diffuse": []}
+        band_definitions = self.meta.get("band_definitions")
+
+        if band_definitions is not None:
+            if len(band_definitions) != len(self.meta["wavelengths"]):
+                raise ValueError(
+                    "band_definitions and wavelengths must have equal length"
+                )
+        else:
+            band_definitions = [None] * len(self.meta["wavelengths"])
+
+        # Calculate the direct and diffuse illumination ratio using the mean
+        # geometry and elevation of the scene.
+        for wvl, band_definition in zip(self.meta["wavelengths"],
+                                        band_definitions):
             rt = self.rt_model()
+            rt_wavelength = (band_definition.py6s_filter
+                             if band_definition is not None else wvl)
             rt.run(self.angles["SZA"].data.mean(),
                    self.angles["SAA"].data.mean(),
                    self.angles["VZA"].data.mean(),
                    self.angles["VAA"].data.mean(),
-                   wvl,
+                   rt_wavelength,
                    np.nanmean(self.topo_bands["altitude"].data),
                    self.rt_options["aerosol_model"],
                    aod=self.rt_options["aod"],
@@ -247,26 +276,72 @@ class Model(object):
 
             self.difftot.append(diffuse_total_ratio)
 
-            # Compute albedo
-            alb_dir, alb_diff, alb_tot = snow.albedo_kokhanovsky(
-                wvl,
-                self.angles["SZA"].data,
-                diffuse_total_ratio,
-                self.ssa,
-                B=1.6, g=0.845)
+            if band_definition is None:
+                alb_dir, alb_diff, alb_tot = snow.albedo_kokhanovsky(
+                    wvl,
+                    self.angles["SZA"].data,
+                    diffuse_total_ratio,
+                    self.ssa,
+                    B=1.6, g=0.845)
+            else:
+                spectral_albedo = [
+                    snow.albedo_kokhanovsky(
+                        spectral_wavelength,
+                        self.angles["SZA"].data,
+                        diffuse_total_ratio,
+                        self.ssa,
+                        B=1.6,
+                        g=0.845,
+                    )
+                    for spectral_wavelength in band_definition.wavelength_nm
+                ]
+                alb_dir = band_definition.integrate_spectral_values(
+                    np.stack([value[0] for value in spectral_albedo]), axis=0
+                )
+                alb_diff = band_definition.integrate_spectral_values(
+                    np.stack([value[1] for value in spectral_albedo]), axis=0
+                )
+                alb_tot = band_definition.integrate_spectral_values(
+                    np.stack([value[2] for value in spectral_albedo]), axis=0
+                )
+
             self.albedo["direct"].append(alb_dir)
             self.albedo["diffuse"].append(alb_diff)
             self.albedo["total"].append(alb_tot)
 
     def compute_brf(self):
-        # Calculate brf factor for geometry, wavelength and ssa value
-        for wvl in self.meta["wavelengths"]:
-            self.brf.append((wvl,
-                             snow.brf_kokhanovsky(self.topo_bands["eff_sza"],
-                                                  self.topo_bands["eff_vza"],
-                                                  self.angles["SAA"] -
-                                                  self.angles["VAA"],
-                                                  wvl, self.ssa,)))
+        self.brf = []
+        band_definitions = self.meta.get("band_definitions")
+        if band_definitions is None:
+            band_definitions = [None] * len(self.meta["wavelengths"])
+
+        # Calculate BRF for the local geometry, wavelength and snow SSA.
+        for wvl, band_definition in zip(self.meta["wavelengths"],
+                                        band_definitions):
+            if band_definition is None:
+                band_brf = snow.brf_kokhanovsky(
+                    self.topo_bands["eff_sza"],
+                    self.topo_bands["eff_vza"],
+                    self.angles["SAA"] - self.angles["VAA"],
+                    wvl,
+                    self.ssa,
+                )
+            else:
+                spectral_brf = [
+                    snow.brf_kokhanovsky(
+                        self.topo_bands["eff_sza"],
+                        self.topo_bands["eff_vza"],
+                        self.angles["SAA"] - self.angles["VAA"],
+                        spectral_wavelength,
+                        self.ssa,
+                    )
+                    for spectral_wavelength in band_definition.wavelength_nm
+                ]
+                band_brf = band_definition.integrate_spectral_values(
+                    np.stack(spectral_brf), axis=0
+                )
+
+            self.brf.append((wvl, band_brf))
 
     def simulate_TOA_radiance(self, casenum):
 
@@ -279,12 +354,20 @@ class Model(object):
         case = Cases()
         case.create_cases(casenum)
 
-        for band, wvl, hdr, bhr, brf in zip(self.meta["bandlist"],
-                                            self.meta["wavelengths"],
-                                            self.albedo["direct"],
-                                            self.albedo["diffuse"],
-                                            self.brf,
-                                            ):
+        band_definitions = self.meta.get("band_definitions")
+        if band_definitions is None:
+            band_definitions = [None] * len(self.meta["bandlist"])
+
+        for band, wvl, definition, hdr, bhr, brf in zip(
+                self.meta["bandlist"],
+                self.meta["wavelengths"],
+                band_definitions,
+                self.albedo["direct"],
+                self.albedo["diffuse"],
+                self.brf):
+
+            rt_wavelength = (definition.py6s_filter
+                             if definition is not None else wvl)
 
             synthetic_toa_radiance = iterative_radiance(self.topo_bands,
                                                         self.angles,
@@ -293,11 +376,12 @@ class Model(object):
                                                         bhr,
                                                         self.rt_model(),
                                                         self.rt_options,
-                                                        brf[1].data,
+                                                        np.asarray(brf[1]),
                                                         case,
                                                         tw=5,
                                                         aw=7,
                                                         dif_anis=False,
+                                                        rt_wavelength=rt_wavelength,
                                                         )
             self.toa_rad[band] = xr.DataArray(synthetic_toa_radiance,
                                               dims=['x', 'y'],
