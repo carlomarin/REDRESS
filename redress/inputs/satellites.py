@@ -8,6 +8,7 @@ M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 import importlib
 import xarray as xr
 from redress.geospatial import gdal_ops
+from redress.inputs.sentinel2 import sentinel2_bands
 
 
 def import_reader(reader):
@@ -65,3 +66,4 @@ def import_s3OLCI(inpath, extent, epsg=2154, reader=None, user_list=[]):
                                         user_list=user_list)
 
     return s3_prod
+
