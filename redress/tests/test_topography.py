@@ -48,7 +48,7 @@ class Test_horizons(object):
         z = np.cos(y) * x + np.sin(x) * y
         z = z + 100
 
-        fake_dem.band = xr.DataArray(z)
+        fake_dem.bands["altitude"] = xr.DataArray(z, dims=["x", "y"])
 
         return fake_dem
 
@@ -137,12 +137,13 @@ class Test_horizons(object):
 
         # Extract horizon data at a given point
         ct_phi, ct_ele, ct_dist = self.extract_horizon(
-            dem.topo_bands["horizon_ele"].data,
-            dem.topo_bands["horizon_dist"].data, point_a[0], point_a[1], N=32)
+            dem.bands["horizon_ele"].data,
+            dem.bands["horizon_dist"].data, point_a[0], point_a[1], N=32)
 
         # Extract horizon using the single point algorithm as comparison point
         onept_az, onept_ele, onept_dist = self.one_point_horizon(
-            dem.band.data, point_a[0], point_a[1], dem.pixel_size[0], 32)
+            dem.bands["altitude"].data,
+            point_a[0], point_a[1], dem.pixel_size[0], 32)
 
         # Compare distances to horizon 5% tolerence on mean
         assert np.average(np.array(ct_dist)) == approx(
@@ -150,3 +151,4 @@ class Test_horizons(object):
         # Compare values of elevation to horizon 5% tolerence on mean
         assert np.average(np.array(ct_ele)) == approx(
             np.average(np.array(onept_ele)), 4.5)
+

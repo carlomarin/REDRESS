@@ -67,27 +67,30 @@ class Dem(object):
             raise RuntimeError("Error: Horizon algorithm only works with"
                                " square pixels!")
 
-        # Set nans to zeros for the horizon to work (zero is impossible in the
-        # mountains)
-        self.bands["altitude"].fillna(0)
+        if "altitude" not in self.bands:
+            raise ValueError("DEM dataset must contain an 'altitude' variable")
+
+        # Use a temporary filled array because the horizon implementation does
+        # not accept NaNs. Keep the original DEM unchanged.
+        altitude = self.bands["altitude"].fillna(0)
 
         # Pre-allocate elevation and distance rasters. These rasters will
         # contain the angle in degrees to the horizon and the distance in
         # meters for each pixel. Each slice in the 3rd dimension represents
         # a direction.
-        eh = np.full((2 * N, self.bands["altitude"].data.shape[0],
-                      self.bands["altitude"].data.shape[1]), np.NaN,
+        eh = np.full((2 * N, altitude.data.shape[0],
+                      altitude.data.shape[1]), np.nan,
                      dtype=np.float32,
                      )
-        dh = np.full((2 * N, self.bands["altitude"].data.shape[0],
-                      self.bands["altitude"].data.shape[1]), np.NaN,
+        dh = np.full((2 * N, altitude.data.shape[0],
+                      altitude.data.shape[1]), np.nan,
                      dtype=np.float32,
                      )
 
         # Run the horizon algorithm for each direction
         for ii in range(1, N + 1, 1):
             phi = (ii - 1) * np.pi / N
-            ehtemp, dhtemp = dozier_horizon(self.bands["altitude"].data,
+            ehtemp, dhtemp = dozier_horizon(altitude.data,
                                             abs(self.pixel_size[0]), phi)
             dh[ii - 1, :, :] = dhtemp[0, :, :]
             eh[ii - 1, :, :] = ehtemp[0, :, :]
@@ -103,9 +106,6 @@ class Dem(object):
                                                  dims=['phi', 'x', 'y'])
         self.bands["horizon_dist"] = xr.DataArray(dh,
                                                   dims=['phi', 'x', 'y'])
-
-        # Set zeros back to nans
-        self.bands["altitude"].where(self.bands["altitude"] == 0)
 
     def compute_topo_bands(self):
         """Calculate all topographic products from DEM
@@ -302,3 +302,4 @@ class Model(object):
             self.toa_rad[band] = xr.DataArray(synthetic_toa_radiance,
                                               dims=['x', 'y'],
                                               coords=self.topo_bands.coords)
+

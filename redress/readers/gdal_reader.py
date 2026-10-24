@@ -6,7 +6,7 @@ gdal_reader.
 This file is part of the complex_terrain algorithm
 M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 """
-import gdal
+from osgeo import gdal
 import xarray as xr
 import numpy as np
 from pyproj import Proj, transform
@@ -187,3 +187,4 @@ def dem_generic(inpath, extent, epsg,):
     dem.pixel_size = (clipped_geotrans[1], clipped_geotrans[-1])
 
     return dem
+
