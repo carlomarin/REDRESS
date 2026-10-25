@@ -38,23 +38,43 @@ def albedo_kokhanovsky(wls, sza, dd, ssa, B=1.6, g=0.845):
     # Convert wavelengths from nanometers to meters (done here to avoid
     # confusion).
     wls_m = wls * 1e-9
-    # White sky albedo
+    sza = np.asarray(sza, dtype=np.float64)
+    if np.any((sza < 0) | (sza > np.pi / 2)):
+        raise ValueError("solar zenith angles must be in [0, pi/2] radians")
+
+    # White-sky albedo does not depend on solar zenith angle.
     alb_diff_flat_val = so.albedo_diffuse_KZ04(wls_m, ssa,
                                                impurities={'BC': 0},
                                                ni="w2008", B=B, g=g)
-    # Black sky albedo
-    alb_dir_flat = so.albedo_direct_KZ04(wls_m, sza, ssa,
-                                         impurities={'BC': 0},
-                                         ni="w2008",
-                                         B=B, g=g)
 
-    # Make the diffuse albedo the same shape as the sza for consistency
-    alb_diff_flat = np.full(sza.shape, alb_diff_flat_val)
+    # Snowoptics 0.99.2 validates the cosine with a scalar assertion. Evaluate
+    # each distinct angle once, then restore the original raster shape.
+    unique_sza, inverse = np.unique(sza, return_inverse=True)
+    unique_direct_albedo = np.asarray([
+        so.albedo_direct_KZ04(
+            wls_m,
+            float(angle),
+            ssa,
+            impurities={'BC': 0},
+            ni="w2008",
+            B=B,
+            g=g,
+        )
+        for angle in unique_sza
+    ])
+    alb_dir_flat = unique_direct_albedo[inverse].reshape(sza.shape)
 
-    # Blue sky albedo
-    alb_kok_flat = so.albedo_KZ04(wls_m, sza, ssa, r_difftot=dd,
-                                  impurities={'BC': 0},
-                                  ni="w2008", B=1.6, g=0.845)
+    # Make diffuse albedo and diffuse fraction conform to the angle grid.
+    alb_diff_flat = np.full(sza.shape, alb_diff_flat_val, dtype=np.float64)
+    diffuse_fraction = np.broadcast_to(
+        np.asarray(dd, dtype=np.float64), sza.shape
+    )
+
+    # Blue-sky albedo is the direct/diffuse irradiance-weighted combination.
+    alb_kok_flat = (
+        (1.0 - diffuse_fraction) * alb_dir_flat
+        + diffuse_fraction * alb_diff_flat
+    )
 
     return (alb_dir_flat, alb_diff_flat, alb_kok_flat)
 
@@ -129,3 +149,4 @@ def brf_kokhanovsky(theta_i, theta_v, phi, wvl, SSA, b=13, M=0):
     rr = r * np.exp(-alpha * k0i * k0v / r)
 
     return rr
+
