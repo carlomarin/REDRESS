@@ -97,6 +97,9 @@ def iterative_radiance(
     aw=7,
     dif_anis=False,
     rt_wavelength=None,
+    return_reflectance=False,
+    max_iterations=100,
+    verbose=True,
 ):
     """Iterative solver for TOA radiance
     """
@@ -130,8 +133,9 @@ def iterative_radiance(
     bb_nbh = convolve(bb, terrain_window, boundary="fill", fill_value=np.nan)
 
     # Run the iterative reflectance for all bands
-    print("Running complex terrain reflectance calculation"
-          " for band: %s nm" % wavelength)
+    if verbose:
+        print("Running complex terrain reflectance calculation"
+              " for band: %s nm" % wavelength)
 
     # Initialise environmental reflectance, terrain reflected irradiance
     # iterative reflectance, and iterative radiance.
@@ -171,6 +175,8 @@ def iterative_radiance(
                  ozone=rt_options["ozone"],
                  atmo=rt_options["atmo_model"],
                  atcor=rt_options["atcor"],
+                 month=rt_options.get("month"),
+                 day=rt_options.get("day"),
                  )
 
     atmospheric_data = rt_model.outputs
@@ -188,6 +194,8 @@ def iterative_radiance(
                  ozone=rt_options["ozone"],
                  atmo=rt_options["atmo_model"],
                  atcor=rt_options["atcor"],
+                 month=rt_options.get("month"),
+                 day=rt_options.get("day"),
                  )
     atmospheric_inv_data = rt_model.outputs
 
@@ -262,9 +270,10 @@ def iterative_radiance(
     l_difference = 1
     i = 1
 
-    while l_difference > 1e-3:
+    while l_difference > 1e-3 and i <= max_iterations:
 
-        print("Iteration number: %s" % i)
+        if verbose:
+            print("Iteration number: %s" % i)
 
         #  Atmospheric contribution to the pixel (multple reflections),
         #  eq. 20
@@ -339,11 +348,29 @@ def iterative_radiance(
         l_difference = np.abs(
             np.nanmean(l_toa[2:-2, 2:-2, i] - l_toa[2:-2, 2:-2, i - 1])
         )
-        print(
-            "radiance difference with previous"
-            " iteration = %s" % l_difference
-        )
+        if verbose:
+            print(
+                "radiance difference with previous"
+                " iteration = %s" % l_difference
+            )
         i += 1
 
-    return l_toa[:, :, -1]
+    if l_difference > 1e-3:
+        raise RuntimeError(
+            f"Terrain radiance did not converge after {max_iterations} "
+            "iterations"
+        )
+
+    toa_radiance = l_toa[:, :, -1]
+    if not return_reflectance:
+        return toa_radiance
+
+    reflectance_denominator = Eo * cos_sza
+    toa_reflectance = np.divide(
+        np.pi * toa_radiance,
+        reflectance_denominator,
+        out=np.full_like(toa_radiance, np.nan, dtype=np.float64),
+        where=reflectance_denominator > 0,
+    )
+    return toa_radiance, toa_reflectance
 

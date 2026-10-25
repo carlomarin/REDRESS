@@ -16,6 +16,7 @@ class rtmodel(object):
 
     def run(self, sza, saa, vza, vaa, wavelength, alt, aero,
             aod=0.1, refl=0.99, water=0.05, ozone=0.30, atmo=None, atcor=False,
+            month=None, day=None,
             ):
         """Run Py6S for one wavelength or one spectral response.
 
@@ -49,8 +50,11 @@ class rtmodel(object):
         s.geometry.solar_a = np.rad2deg(saa)
         s.geometry.view_a = np.rad2deg(vaa)
 
-        # s.geometry.day = date.day
-        # s.geometry.month = date.month
+        if (month is None) != (day is None):
+            raise ValueError("month and day must be provided together")
+        if month is not None:
+            s.geometry.month = int(month)
+            s.geometry.day = int(day)
 
         # Set altitudes
         s.altitudes = ps.Altitudes()

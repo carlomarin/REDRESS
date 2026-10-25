@@ -5,6 +5,7 @@ This file is part of the complex_terrain algorithm
 M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 """
 import importlib
+from datetime import date
 import xarray as xr
 import numpy as np
 from scipy.ndimage import median_filter
@@ -190,6 +191,7 @@ class Model(object):
         self.albedo = {"total": [], "direct": [], "diffuse": []}
         self.case = Cases()
         self.toa_rad = xr.Dataset()
+        self.toa_reflectance = xr.Dataset()
         self.geotransform = None
     # TODO: make a copy attributes function in class to copy attributes from other class
     def import_rt_model(self, rt_name):
@@ -218,12 +220,20 @@ class Model(object):
         self.meta = sentinel2_metadata(platform, band_names)
 
     def set_rt_options(self, aero, aod=0.1, refl=0.99, water=0.05,
-                       ozone=0.3, atmos=None, atcor=False):
+                       ozone=0.3, atmos=None, atcor=False,
+                       month=None, day=None):
         """Set the atmopheric conditions as entry options for the RT Model."""
+
+        if (month is None) != (day is None):
+            raise ValueError("month and day must be provided together")
+        if month is not None:
+            date(2000, int(month), int(day))
+
         self.rt_options.update({"aerosol_model": aero,
                                 "aod": aod, "refl": refl, "water": water,
                                 "ozone": ozone, "atmo_model": atmos,
-                                "atcor": atcor})
+                                "atcor": atcor,
+                                "month": month, "day": day})
 
     def compute_albedo(self):
         if self.ssa is None:
@@ -268,6 +278,8 @@ class Model(object):
                    ozone=self.rt_options["ozone"],
                    atmo=self.rt_options["atmo_model"],
                    atcor=self.rt_options["atcor"],
+                   month=self.rt_options.get("month"),
+                   day=self.rt_options.get("day"),
                    )
             dir_illum = rt.outputs.direct_solar_irradiance
             diff_illum = rt.outputs.diffuse_solar_irradiance
@@ -343,7 +355,10 @@ class Model(object):
 
             self.brf.append((wvl, band_brf))
 
-    def simulate_TOA_radiance(self, casenum):
+    def simulate_TOA_radiance(self, casenum, verbose=True):
+
+        self.toa_rad = xr.Dataset()
+        self.toa_reflectance = xr.Dataset()
 
         # Compute albedo
         self.compute_albedo()
@@ -369,21 +384,29 @@ class Model(object):
             rt_wavelength = (definition.py6s_filter
                              if definition is not None else wvl)
 
-            synthetic_toa_radiance = iterative_radiance(self.topo_bands,
-                                                        self.angles,
-                                                        wvl,
-                                                        hdr,
-                                                        bhr,
-                                                        self.rt_model(),
-                                                        self.rt_options,
-                                                        np.asarray(brf[1]),
-                                                        case,
-                                                        tw=5,
-                                                        aw=7,
-                                                        dif_anis=False,
-                                                        rt_wavelength=rt_wavelength,
-                                                        )
+            synthetic_toa_radiance, synthetic_toa_reflectance = \
+                iterative_radiance(self.topo_bands,
+                                   self.angles,
+                                   wvl,
+                                   hdr,
+                                   bhr,
+                                   self.rt_model(),
+                                   self.rt_options,
+                                   np.asarray(brf[1]),
+                                   case,
+                                   tw=5,
+                                   aw=7,
+                                   dif_anis=False,
+                                   rt_wavelength=rt_wavelength,
+                                   return_reflectance=True,
+                                   verbose=verbose,
+                                   )
             self.toa_rad[band] = xr.DataArray(synthetic_toa_radiance,
                                               dims=['x', 'y'],
                                               coords=self.topo_bands.coords)
+            self.toa_reflectance[band] = xr.DataArray(
+                synthetic_toa_reflectance,
+                dims=['x', 'y'],
+                coords=self.topo_bands.coords,
+            )
 
