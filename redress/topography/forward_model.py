@@ -8,6 +8,34 @@ import numpy as np
 from astropy.convolution import convolve
 
 
+def _solar_irradiance_density(outputs):
+    """Return Py6S extraterrestrial solar irradiance in W m-2 um-1.
+
+    Monochromatic 6S runs expose ``solar_spectrum`` directly. Filtered sensor
+    runs instead expose the solar-spectrum integral and the filter integral;
+    their ratio is the response-weighted irradiance density.
+    """
+
+    values = outputs.values
+    if "solar_spectrum" in values:
+        solar_irradiance = values["solar_spectrum"]
+    elif {"int_solar_spectrum", "int_funct_filt"} <= values.keys():
+        filter_integral = values["int_funct_filt"]
+        if filter_integral <= 0:
+            raise ValueError("Py6S returned a non-positive filter integral")
+        solar_irradiance = values["int_solar_spectrum"] / filter_integral
+    else:
+        available = ", ".join(sorted(values))
+        raise ValueError(
+            "Py6S did not return the solar irradiance required by REDRESS. "
+            f"Available outputs: {available}"
+        )
+
+    if not np.isfinite(solar_irradiance) or solar_irradiance <= 0:
+        raise ValueError("Py6S returned invalid extraterrestrial irradiance")
+    return float(solar_irradiance)
+
+
 class Cases:
     """Terrain configuration class.
 
@@ -205,7 +233,7 @@ def iterative_radiance(
     EdP_flat = atmospheric_data.direct_solar_irradiance
 
     # SOlar flux
-    Eo = atmospheric_data.solar_spectrum
+    Eo = _solar_irradiance_density(atmospheric_data)
 
     # For viewing direction
     EdP_thetav = atmospheric_inv_data.direct_solar_irradiance
