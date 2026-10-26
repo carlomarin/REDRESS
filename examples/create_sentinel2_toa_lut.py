@@ -38,6 +38,9 @@ AEROSOL_MODEL = "Continental"
 ATMOSPHERIC_PROFILE = None
 REDRESS_CASE_NUMBER = 5
 SCENE_SIZE = 9
+PIXEL_RESOLUTION_M = 20.0
+TERRAIN_WINDOW_WIDTH_M = 1500.0
+ATMOSPHERE_WINDOW_WIDTH_M = 2100.0
 
 OUTPUT_DIRECTORY = Path("outputs/sentinel2_toa_lut")
 
@@ -500,6 +503,9 @@ def main():
         atmospheric_profile=ATMOSPHERIC_PROFILE,
         case_number=REDRESS_CASE_NUMBER,
         scene_size=SCENE_SIZE,
+        pixel_resolution_m=PIXEL_RESOLUTION_M,
+        terrain_window_width_m=TERRAIN_WINDOW_WIDTH_M,
+        atmosphere_window_width_m=ATMOSPHERE_WINDOW_WIDTH_M,
     )
 
     netcdf_file = OUTPUT_DIRECTORY / f"{PLATFORM}_toa_endmember_lut.nc"

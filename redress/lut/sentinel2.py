@@ -9,6 +9,11 @@ import numpy as np
 import xarray as xr
 
 from redress.inputs.products import Model
+from redress.topography.forward_model import (
+    DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M,
+    DEFAULT_TERRAIN_WINDOW_WIDTH_M,
+    window_size_from_distance,
+)
 
 
 @dataclass(frozen=True)
@@ -343,6 +348,9 @@ def create_sentinel2_toa_lut(
     case_number: int = 5,
     scene_size: int = 9,
     enforce_view_factor_closure: bool = True,
+    pixel_resolution_m: float = 20.0,
+    terrain_window_width_m: float = DEFAULT_TERRAIN_WINDOW_WIDTH_M,
+    atmosphere_window_width_m: float = DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M,
 ) -> xr.Dataset:
     """Run REDRESS for named Sentinel-2 TOA endmember scenarios.
 
@@ -353,6 +361,8 @@ def create_sentinel2_toa_lut(
     view and terrain configuration factors must satisfy the REDRESS bowl
     closure by default. Set ``enforce_view_factor_closure=False`` only when
     deliberately varying the two factors independently for sensitivity work.
+    Terrain and atmospheric neighbourhood widths are expressed in metres and
+    converted to odd moving-window sizes using ``pixel_resolution_m``.
     """
 
     scenarios = tuple(scenarios)
@@ -414,7 +424,13 @@ def create_sentinel2_toa_lut(
             month=month,
             day=day,
         )
-        model.simulate_TOA_radiance(case_number, verbose=False)
+        model.simulate_TOA_radiance(
+            case_number,
+            verbose=False,
+            pixel_resolution_m=pixel_resolution_m,
+            terrain_window_width_m=terrain_window_width_m,
+            atmosphere_window_width_m=atmosphere_window_width_m,
+        )
 
         for band_index, band_name in enumerate(model.meta["bandlist"]):
             toa_radiance[scenario_index, band_index] = \
@@ -489,6 +505,15 @@ def create_sentinel2_toa_lut(
             ),
             "redress_case_number": case_number,
             "scene_size": scene_size,
+            "pixel_resolution_m": pixel_resolution_m,
+            "terrain_window_width_m": terrain_window_width_m,
+            "atmosphere_window_width_m": atmosphere_window_width_m,
+            "terrain_window_pixels": window_size_from_distance(
+                terrain_window_width_m, pixel_resolution_m
+            ),
+            "atmosphere_window_pixels": window_size_from_distance(
+                atmosphere_window_width_m, pixel_resolution_m
+            ),
             "view_factor_relationship": "terrain factor = 1 - sky view",
             "view_factor_source": (
                 "prescribed uniform diagnostic scenarios; production "

@@ -5,7 +5,72 @@ This file is part of the complex_terrain algorithm
 M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 """
 import numpy as np
-from astropy.convolution import convolve
+from scipy.ndimage import uniform_filter
+
+
+DEFAULT_TERRAIN_WINDOW_WIDTH_M = 1500.0
+DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M = 2100.0
+DEFAULT_PIXEL_RESOLUTION_M = 300.0
+
+
+def window_size_from_distance(window_width_m, pixel_resolution_m):
+    """Convert a physical moving-window width to an odd pixel count.
+
+    The returned window covers at least ``window_width_m`` and always has a
+    central pixel. At the original 300 m OLCI resolution, the REDRESS widths
+    of 1.5 and 2.1 km therefore reproduce the legacy 5- and 7-pixel windows.
+    At 20 m Sentinel-2 resolution, they become 75 and 105 pixels.
+    """
+
+    window_width_m = float(window_width_m)
+    pixel_resolution_m = float(pixel_resolution_m)
+    if not np.isfinite(window_width_m) or window_width_m <= 0:
+        raise ValueError("window_width_m must be a positive finite value")
+    if not np.isfinite(pixel_resolution_m) or pixel_resolution_m <= 0:
+        raise ValueError(
+            "pixel_resolution_m must be a positive finite value"
+        )
+
+    window_size = int(np.ceil(window_width_m / pixel_resolution_m))
+    if window_size % 2 == 0:
+        window_size += 1
+    return window_size
+
+
+def _validate_window_size(window_size, name):
+    """Validate an explicit moving-window size in pixels."""
+
+    if isinstance(window_size, bool) or int(window_size) != window_size:
+        raise ValueError(f"{name} must be an odd positive integer")
+    window_size = int(window_size)
+    if window_size <= 0 or window_size % 2 == 0:
+        raise ValueError(f"{name} must be an odd positive integer")
+    return window_size
+
+
+def _window_mean(values, window_size, boundary="nearest"):
+    """Calculate an efficient NaN-aware square moving-window mean."""
+
+    values = np.asarray(values, dtype=np.float64)
+    finite = np.isfinite(values)
+    filtered_values = uniform_filter(
+        np.where(finite, values, 0.0),
+        size=window_size,
+        mode=boundary,
+        cval=0.0,
+    )
+    filtered_weights = uniform_filter(
+        finite.astype(np.float64),
+        size=window_size,
+        mode=boundary,
+        cval=0.0,
+    )
+    return np.divide(
+        filtered_values,
+        filtered_weights,
+        out=np.full_like(filtered_values, np.nan),
+        where=filtered_weights > 0,
+    )
 
 
 def _solar_irradiance_density(outputs):
@@ -121,21 +186,37 @@ def iterative_radiance(
     rt_options,
     brf,
     case,
-    tw=5,
-    aw=7,
+    tw=None,
+    aw=None,
     dif_anis=False,
     rt_wavelength=None,
     return_reflectance=False,
     return_components=False,
     max_iterations=100,
     verbose=True,
+    pixel_resolution_m=DEFAULT_PIXEL_RESOLUTION_M,
+    terrain_window_width_m=DEFAULT_TERRAIN_WINDOW_WIDTH_M,
+    atmosphere_window_width_m=DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M,
 ):
-    """Iterative solver for TOA radiance
+    """Iterative solver for TOA radiance.
+
+    Neighbourhood windows are derived from their physical widths and the
+    raster resolution. The ``tw`` and ``aw`` arguments remain available as
+    explicit pixel-count overrides for reproducing earlier calculations.
     """
 
-    # Build averaging windows used in convolution
-    terrain_window = np.full((tw, tw), 1 / tw ** 2)  # Reflected terrain
-    atmosphere_window = np.full((aw, aw), 1 / aw ** 2)  # Reflected atmosphere
+    if tw is None:
+        tw = window_size_from_distance(
+            terrain_window_width_m, pixel_resolution_m
+        )
+    else:
+        tw = _validate_window_size(tw, "tw")
+    if aw is None:
+        aw = window_size_from_distance(
+            atmosphere_window_width_m, pixel_resolution_m
+        )
+    else:
+        aw = _validate_window_size(aw, "aw")
 
     # Calculate the cosine of the SZA and effective SZA
     cos_sza = np.cos(angles["SZA"].data)
@@ -153,13 +234,14 @@ def iterative_radiance(
     view_ground = np.where(view_ground > 0, 1, view_ground)  # >0 = 1
 
     # Use convolution to obtain the mean terrain configuration factor
-    ct_nbh = convolve(topo_bands["ct"].data, terrain_window,
-                      boundary="fill", fill_value=np.nan)
+    ct_nbh = _window_mean(
+        topo_bands["ct"].data, tw, boundary="constant"
+    )
     # Shadows, in this product bb = 0 if a shadow, 1 if no shadow
     bb = topo_bands["all_shadows"]
 
     # Shadows in the neighborhood
-    bb_nbh = convolve(bb, terrain_window, boundary="fill", fill_value=np.nan)
+    bb_nbh = _window_mean(bb, tw, boundary="constant")
 
     # Run the iterative reflectance for all bands
     if verbose:
@@ -173,10 +255,10 @@ def iterative_radiance(
     # environmental and terrain reflectance.
     # The environemental reflectance is averaged over 3X3 pixels (diam =
     # 900 m) and terrain reflectance over 7x7 pixels (diam = 2.1 km)
-    re = convolve(bhr, atmosphere_window, boundary="extend",)
+    re = _window_mean(bhr, aw, boundary="nearest")
     re = np.expand_dims(re, axis=2)
 
-    rt = convolve(bhr, terrain_window, boundary="extend",)
+    rt = _window_mean(bhr, tw, boundary="nearest")
     rt = np.expand_dims(rt, axis=2)
 
     r = np.zeros_like(bhr)
@@ -365,9 +447,9 @@ def iterative_radiance(
         r = np.dstack((r, r_currentstep))
 
         # Apply the averaging of the updated reflectance
-        re_i = convolve(r[:, :, i], atmosphere_window, boundary="extend")
+        re_i = _window_mean(r[:, :, i], aw, boundary="nearest")
         re = np.dstack((re, re_i))
-        rt_i = convolve(r[:, :, i], terrain_window, boundary="extend")
+        rt_i = _window_mean(r[:, :, i], tw, boundary="nearest")
         rt = np.dstack((rt, rt_i))
 
         # Update the radiance stack

@@ -16,7 +16,6 @@ dependencies:
   - scipy>=1.11,<2
   - xarray>=2024.1
   - numba>=0.60
-  - astropy>=6
   # The conda-forge Py6S package also supplies the compiled 6S executable.
   - py6s=1.9.2
 

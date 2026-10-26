@@ -13,7 +13,13 @@ from redress.topography.horizon import dozier_horizon
 from redress.topography import dem_products
 from redress.optics import snow
 from redress.inputs.sentinel2 import sentinel2_metadata
-from redress.topography.forward_model import Cases, iterative_radiance
+from redress.topography.forward_model import (
+    DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M,
+    DEFAULT_PIXEL_RESOLUTION_M,
+    DEFAULT_TERRAIN_WINDOW_WIDTH_M,
+    Cases,
+    iterative_radiance,
+)
 
 
 class Sat(object):
@@ -445,7 +451,15 @@ class Model(object):
 
             self.brf.append((wvl, band_brf))
 
-    def simulate_TOA_radiance(self, casenum, verbose=True):
+    def simulate_TOA_radiance(
+        self,
+        casenum,
+        verbose=True,
+        pixel_resolution_m=DEFAULT_PIXEL_RESOLUTION_M,
+        terrain_window_width_m=DEFAULT_TERRAIN_WINDOW_WIDTH_M,
+        atmosphere_window_width_m=DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M,
+    ):
+        """Simulate TOA radiance using physically scaled neighbourhoods."""
 
         self.toa_rad = xr.Dataset()
         self.toa_reflectance = xr.Dataset()
@@ -493,13 +507,14 @@ class Model(object):
                 self.rt_options,
                 np.asarray(brf[1]),
                 case,
-                tw=5,
-                aw=7,
                 dif_anis=False,
                 rt_wavelength=rt_wavelength,
                 return_reflectance=True,
                 return_components=True,
                 verbose=verbose,
+                pixel_resolution_m=pixel_resolution_m,
+                terrain_window_width_m=terrain_window_width_m,
+                atmosphere_window_width_m=atmosphere_window_width_m,
             )
             (synthetic_toa_radiance,
              synthetic_toa_reflectance,

@@ -10,9 +10,42 @@ import xarray as xr
 
 from redress.topography.forward_model import (
     Cases,
+    _window_mean,
     _solar_irradiance_density,
     iterative_radiance,
+    window_size_from_distance,
 )
+
+
+@pytest.mark.parametrize(
+    "width_m,resolution_m,expected_pixels",
+    (
+        (1500.0, 300.0, 5),
+        (2100.0, 300.0, 7),
+        (1500.0, 20.0, 75),
+        (2100.0, 20.0, 105),
+        (1000.0, 20.0, 51),
+    ),
+)
+def test_window_size_is_derived_from_physical_scale(
+    width_m, resolution_m, expected_pixels
+):
+    assert window_size_from_distance(width_m, resolution_m) == \
+        expected_pixels
+
+
+@pytest.mark.parametrize("width_m,resolution_m", ((0, 20), (1000, 0)))
+def test_window_size_rejects_non_positive_values(width_m, resolution_m):
+    with pytest.raises(ValueError, match="positive finite"):
+        window_size_from_distance(width_m, resolution_m)
+
+
+def test_window_mean_supports_a_window_larger_than_the_scene():
+    values = np.full((9, 9), 0.6)
+
+    result = _window_mean(values, 105, boundary="nearest")
+
+    np.testing.assert_allclose(result, values)
 
 
 def test_monochromatic_solar_irradiance_is_returned_directly():

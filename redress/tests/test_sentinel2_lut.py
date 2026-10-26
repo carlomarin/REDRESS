@@ -38,6 +38,8 @@ def test_small_snow_brf_lut_has_labelled_dimensions():
 
 def test_toa_lut_preserves_scenario_parameters(monkeypatch):
     class FakeModel:
+        forward_calls = []
+
         def __init__(self):
             self.meta = None
 
@@ -58,7 +60,11 @@ def test_toa_lut_preserves_scenario_parameters(monkeypatch):
         def set_rt_options(self, **kwargs):
             self.rt_options = kwargs
 
-        def simulate_TOA_radiance(self, case_number, verbose=True):
+        def simulate_TOA_radiance(
+            self, case_number, verbose=True, **forward_options
+        ):
+            self.forward_options = forward_options
+            self.forward_calls.append(forward_options)
             shape = self.topo_bands["altitude"].shape
             bands = self.meta["bandlist"]
             self.toa_rad = xr.Dataset({
@@ -116,6 +122,19 @@ def test_toa_lut_preserves_scenario_parameters(monkeypatch):
     assert lut["category"].values.tolist() == ["Baseline", "Atmosphere"]
     assert lut["aod550"].values.tolist() == [0.1, 0.3]
     assert lut["black_carbon_ng_g"].values.tolist() == [0.0, 100.0]
+    assert lut.attrs["pixel_resolution_m"] == 20.0
+    assert lut.attrs["terrain_window_width_m"] == 1500.0
+    assert lut.attrs["atmosphere_window_width_m"] == 2100.0
+    assert lut.attrs["terrain_window_pixels"] == 75
+    assert lut.attrs["atmosphere_window_pixels"] == 105
+    assert all(
+        options == {
+            "pixel_resolution_m": 20.0,
+            "terrain_window_width_m": 1500.0,
+            "atmosphere_window_width_m": 2100.0,
+        }
+        for options in FakeModel.forward_calls
+    )
     np.testing.assert_allclose(lut["toa_reflectance"][0], [0.1, 0.2])
     np.testing.assert_allclose(
         lut["hemispherical_directional_reflectance"][0],
