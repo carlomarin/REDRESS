@@ -295,7 +295,8 @@ def iterative_radiance(
     if rt_wavelength is None:
         rt_wavelength = wavelength
 
-    # Call the radiative transfer class
+    # Request atmosphere-only quantities from 6S. REDRESS adds the explicit
+    # surface-atmosphere coupling and terrain contributions below.
     rt_model.run(angles["SZA"].data.mean(),
                  angles["SAA"].data.mean(),
                  angles["VZA"].data.mean(),
@@ -304,7 +305,7 @@ def iterative_radiance(
                  np.nanmean(topo_bands["altitude"].data),
                  rt_options["aerosol_model"],
                  aod=rt_options["aod"],
-                 refl=bhr.mean(),
+                 refl=0.0,
                  water=rt_options["water"],
                  ozone=rt_options["ozone"],
                  atmo=rt_options["atmo_model"],
@@ -323,7 +324,7 @@ def iterative_radiance(
                  np.nanmean(topo_bands["altitude"].data),
                  rt_options["aerosol_model"],
                  aod=rt_options["aod"],
-                 refl=bhr.mean(),
+                 refl=0.0,
                  water=rt_options["water"],
                  ozone=rt_options["ozone"],
                  atmo=rt_options["atmo_model"],
@@ -423,9 +424,10 @@ def iterative_radiance(
 
         # Atmospheric coupling switch
         if case.atm_coupl:
-            EtP = EtP_flat + EtGAP
+            coupled_irradiance = EtGAP
         else:
-            EtP = EtP_flat
+            coupled_irradiance = 0.0
+        EtP = EtP_flat + coupled_irradiance
 
         # Terrain contribution switch
         if case.terrain_contribution:
@@ -442,10 +444,10 @@ def iterative_radiance(
 
             EtGP = 0
 
-        # Combine parts of the total diffuse irradiance incoming at the
-        # surface of the pixel, built from eq. 3 (rewritten based on grey
-        # recaps)
-        EhP = EhP_flat * vd + EtGP
+        # Equation 9 of Lamare et al. (2020): atmospheric diffuse irradiance,
+        # terrain-reflected irradiance and surface-atmosphere coupling all
+        # illuminate the observed pixel.
+        EhP = EhP_flat * vd + EtGP + coupled_irradiance
 
         # If considering the neighbouring slopes contributions directly to
         # the satellite signal, "l_dif_dir" and "l_dif_ref_coupl_dif"

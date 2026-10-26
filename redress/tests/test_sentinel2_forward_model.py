@@ -13,12 +13,14 @@ from redress.inputs.products import Model
 
 class _FakeRadiativeTransferModel:
     wavelengths = []
+    ground_reflectances = []
 
     def __init__(self):
         self.outputs = None
 
     def run(self, sza, saa, vza, vaa, wavelength, altitude, aerosol, **kwargs):
         self.wavelengths.append(wavelength)
+        self.ground_reflectances.append(kwargs["refl"])
         self.outputs = SimpleNamespace(
             direct_solar_irradiance=3.0,
             diffuse_solar_irradiance=1.0,
@@ -94,6 +96,7 @@ def test_model_integrates_snow_optics_over_sentinel2_response(monkeypatch):
     )
 
     _FakeRadiativeTransferModel.wavelengths = []
+    _FakeRadiativeTransferModel.ground_reflectances = []
     model = Model()
     model.set_sentinel2("S2B", ["B05"])
     model.ssa = 20.0
@@ -121,6 +124,7 @@ def test_model_integrates_snow_optics_over_sentinel2_response(monkeypatch):
     np.testing.assert_allclose(model.brf[0][1], effective_wavelength)
 
     assert len(_FakeRadiativeTransferModel.wavelengths) == 1
+    assert _FakeRadiativeTransferModel.ground_reflectances == [0.0]
     assert _FakeRadiativeTransferModel.wavelengths[0] is \
         model.meta["band_definitions"][0].py6s_filter
     assert received_impurities

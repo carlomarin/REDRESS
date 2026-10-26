@@ -113,6 +113,28 @@ class _TransparentAtmosphere:
         )
 
 
+class _CoupledAtmosphere:
+    """RT model exposing diffuse irradiance and atmospheric albedo."""
+
+    outputs = None
+    ground_reflectances = []
+
+    @classmethod
+    def run(cls, sza, saa, vza, vaa, wavelength, altitude, aerosol, **kwargs):
+        solar_irradiance = 1000.0
+        direct_transmittance = 0.8
+        cls.ground_reflectances.append(kwargs["refl"])
+        cls.outputs = SimpleNamespace(
+            direct_solar_irradiance=(
+                solar_irradiance * np.cos(sza) * direct_transmittance
+            ),
+            diffuse_solar_irradiance=100.0,
+            spherical_albedo=SimpleNamespace(total=0.2),
+            atmospheric_intrinsic_radiance=0.0,
+            values={"solar_spectrum": solar_irradiance},
+        )
+
+
 def _uniform_geometry(local_incidence_degree, shape=(9, 9)):
     global_sza = np.deg2rad(45.0)
     local_incidence = np.deg2rad(local_incidence_degree)
@@ -132,6 +154,53 @@ def _uniform_geometry(local_incidence_degree, shape=(9, 9)):
         "all_shadows": (("x", "y"), np.ones(shape)),
     })
     return angles, topography
+
+
+def test_surface_atmosphere_coupling_illuminates_observed_pixel():
+    angles, topography = _uniform_geometry(45.0)
+    shape = topography["altitude"].shape
+    components = {}
+
+    for case_number in (3, 4):
+        case = Cases()
+        case.create_cases(case_number)
+        _CoupledAtmosphere.ground_reflectances = []
+        _, _, case_components = iterative_radiance(
+            topography,
+            angles,
+            wavelength=550.0,
+            hdr=np.full(shape, 0.5),
+            bhr=np.full(shape, 0.5),
+            rt_model=_CoupledAtmosphere,
+            rt_options={
+                "aerosol_model": "None",
+                "aod": 0.0,
+                "refl": 0.9,
+                "water": 0.0,
+                "ozone": 0.0,
+                "atmo_model": None,
+                "atcor": False,
+            },
+            brf=np.full(shape, 0.5),
+            case=case,
+            return_reflectance=True,
+            return_components=True,
+            verbose=False,
+        )
+        components[case_number] = case_components
+        assert _CoupledAtmosphere.ground_reflectances == [0.0, 0.0]
+
+    direct_flat = 1000.0 * np.cos(np.deg2rad(45.0)) * 0.8
+    total_flat = direct_flat + 100.0
+    coupling = total_flat * (0.5 * 0.2) / (1 - 0.5 * 0.2)
+    expected_radiance_increment = 0.5 / np.pi * coupling * 0.8
+    actual_radiance_increment = (
+        components[4]["diffuse_surface"][4, 4]
+        - components[3]["diffuse_surface"][4, 4]
+    )
+    assert actual_radiance_increment == pytest.approx(
+        expected_radiance_increment
+    )
 
 
 def test_local_incidence_cosine_scales_every_wavelength_equally():

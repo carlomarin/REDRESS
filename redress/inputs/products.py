@@ -335,7 +335,9 @@ class Model(object):
                    np.nanmean(self.topo_bands["altitude"].data),
                    self.rt_options["aerosol_model"],
                    aod=self.rt_options["aod"],
-                   refl=self.rt_options["refl"],
+                   # Only the atmosphere-only direct/diffuse ratio is used.
+                   # REDRESS calculates surface coupling explicitly.
+                   refl=0.0,
                    water=self.rt_options["water"],
                    ozone=self.rt_options["ozone"],
                    atmo=self.rt_options["atmo_model"],
