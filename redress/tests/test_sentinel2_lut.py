@@ -52,6 +52,9 @@ def test_toa_lut_preserves_scenario_parameters(monkeypatch):
         def import_rt_model(self, name):
             self.rt_model_name = name
 
+        def set_lap(self, **kwargs):
+            self.lap = kwargs
+
         def set_rt_options(self, **kwargs):
             self.rt_options = kwargs
 
@@ -80,7 +83,8 @@ def test_toa_lut_preserves_scenario_parameters(monkeypatch):
     scenarios = (
         Sentinel2EndmemberScenario(name="baseline", category="Baseline"),
         Sentinel2EndmemberScenario(
-            name="high_aod", category="Atmosphere", aod550=0.3
+            name="high_aod", category="Atmosphere", aod550=0.3,
+            black_carbon_ng_g=100.0,
         ),
     )
     lut = create_sentinel2_toa_lut(
@@ -94,6 +98,7 @@ def test_toa_lut_preserves_scenario_parameters(monkeypatch):
     assert lut["toa_reflectance"].shape == (2, 2)
     assert lut["category"].values.tolist() == ["Baseline", "Atmosphere"]
     assert lut["aod550"].values.tolist() == [0.1, 0.3]
+    assert lut["black_carbon_ng_g"].values.tolist() == [0.0, 100.0]
     np.testing.assert_allclose(lut["toa_reflectance"][0], [0.1, 0.2])
 
 

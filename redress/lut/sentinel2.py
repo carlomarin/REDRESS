@@ -18,6 +18,10 @@ class Sentinel2EndmemberScenario:
     name: str
     category: str
     specific_surface_area: float = 20.0
+    black_carbon_ng_g: float = 0.0
+    dust_ug_g: float = 0.0
+    dust_density_kg_m3: float = 2600.0
+    dust_model: str = "muller2011"
     solar_zenith_angle: float = 45.0
     local_incidence_angle: float = 45.0
     view_zenith_angle: float = 0.0
@@ -44,8 +48,26 @@ class Sentinel2EndmemberScenario:
             raise ValueError("scenario name cannot be empty")
         if not self.category.strip():
             raise ValueError("scenario category cannot be empty")
+        for name, value in (
+            ("specific_surface_area", self.specific_surface_area),
+            ("black_carbon_ng_g", self.black_carbon_ng_g),
+            ("dust_ug_g", self.dust_ug_g),
+            ("dust_density_kg_m3", self.dust_density_kg_m3),
+        ):
+            if not np.isfinite(value):
+                raise ValueError(f"{name} must be finite")
         if self.specific_surface_area <= 0:
             raise ValueError("specific_surface_area must be greater than zero")
+        if self.black_carbon_ng_g < 0:
+            raise ValueError("black_carbon_ng_g cannot be negative")
+        if self.dust_ug_g < 0:
+            raise ValueError("dust_ug_g cannot be negative")
+        if self.dust_density_kg_m3 <= 0:
+            raise ValueError("dust_density_kg_m3 must be greater than zero")
+        if self.dust_model not in ("muller2011", "skiles2014"):
+            raise ValueError(
+                "dust_model must be 'muller2011' or 'skiles2014'"
+            )
         for name, value in (
             ("solar_zenith_angle", self.solar_zenith_angle),
             ("local_incidence_angle", self.local_incidence_angle),
@@ -362,6 +384,12 @@ def create_sentinel2_toa_lut(
             f"{scenario.name}"
         )
         model.ssa = scenario.specific_surface_area
+        model.set_lap(
+            black_carbon_ng_g=scenario.black_carbon_ng_g,
+            dust_ug_g=scenario.dust_ug_g,
+            dust_density_kg_m3=scenario.dust_density_kg_m3,
+            dust_model=scenario.dust_model,
+        )
         model.angles, model.topo_bands = _forward_scene(
             scenario, scene_size=scene_size
         )
@@ -433,7 +461,15 @@ def create_sentinel2_toa_lut(
                 "prescribed uniform diagnostic scenarios; production "
                 "endmembers must use DEM-derived vt and ct"
             ),
-            "view_factor_closure_enforced": enforce_view_factor_closure,
+            "view_factor_closure_enforced": (
+                "true" if enforce_view_factor_closure else "false"
+            ),
+            "lap_optical_model": (
+                "Snowoptics 0.99.2 Kokhanovsky-Zege impurity absorption"
+            ),
+            "black_carbon_optics": (
+                "Bond and Bergstrom (2006), Snowoptics BC formulation"
+            ),
         },
     )
 
@@ -452,6 +488,9 @@ def create_sentinel2_toa_lut(
 
     coordinate_units = {
         "specific_surface_area": "m2 kg-1",
+        "black_carbon_ng_g": "ng g-1",
+        "dust_ug_g": "ug g-1",
+        "dust_density_kg_m3": "kg m-3",
         "solar_zenith_angle": "degree",
         "local_incidence_angle": "degree",
         "view_zenith_angle": "degree",
@@ -466,6 +505,14 @@ def create_sentinel2_toa_lut(
     }
     for coordinate_name, units in coordinate_units.items():
         dataset[coordinate_name].attrs["units"] = units
+    dataset["black_carbon_ng_g"].attrs["long_name"] = \
+        "black-carbon mass concentration in snow"
+    dataset["dust_ug_g"].attrs["long_name"] = \
+        "mineral-dust mass concentration in snow"
+    dataset["dust_density_kg_m3"].attrs["long_name"] = \
+        "assumed mineral-dust bulk density"
+    dataset["dust_model"].attrs["long_name"] = \
+        "Snowoptics mineral-dust optical formulation"
     dataset["wavelength_nm"].attrs.update(
         long_name="response-weighted effective wavelength",
         units="nm",

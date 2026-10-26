@@ -181,6 +181,13 @@ class Model(object):
     def __init__(self):
 
         self.ssa = None
+        self.snow_impurities = {}
+        self.lap = {
+            "black_carbon_ng_g": 0.0,
+            "dust_ug_g": 0.0,
+            "dust_density_kg_m3": snow.DEFAULT_DUST_DENSITY_KG_M3,
+            "dust_model": "muller2011",
+        }
         self.angles = None
         self.dem = None
         self.meta = None
@@ -218,6 +225,44 @@ class Model(object):
         """
 
         self.meta = sentinel2_metadata(platform, band_names)
+
+    def set_lap(
+        self,
+        black_carbon_ng_g=0.0,
+        dust_ug_g=0.0,
+        dust_density_kg_m3=snow.DEFAULT_DUST_DENSITY_KG_M3,
+        dust_model="muller2011",
+    ):
+        """Set light-absorbing particles in the simulated snow.
+
+        Concentrations are specified as mass of impurity per mass of snow.
+        The Snowoptics representation used by REDRESS permits black carbon,
+        mineral dust, or their simultaneous presence.
+
+        Parameters
+        ----------
+        black_carbon_ng_g : float
+            Black-carbon concentration in ng g-1.
+        dust_ug_g : float
+            Mineral-dust concentration in microgram g-1.
+        dust_density_kg_m3 : float
+            Mineral-dust bulk density in kg m-3.
+        dust_model : {"muller2011", "skiles2014"}
+            Dust optical formulation implemented by Snowoptics.
+        """
+
+        self.snow_impurities = snow.lap_impurities(
+            black_carbon_ng_g=black_carbon_ng_g,
+            dust_ug_g=dust_ug_g,
+            dust_density_kg_m3=dust_density_kg_m3,
+            dust_model=dust_model,
+        )
+        self.lap = {
+            "black_carbon_ng_g": float(black_carbon_ng_g),
+            "dust_ug_g": float(dust_ug_g),
+            "dust_density_kg_m3": float(dust_density_kg_m3),
+            "dust_model": dust_model,
+        }
 
     def set_rt_options(self, aero, aod=0.1, refl=0.99, water=0.05,
                        ozone=0.3, atmos=None, atcor=False,
@@ -294,6 +339,7 @@ class Model(object):
                     self.angles["SZA"].data,
                     diffuse_total_ratio,
                     self.ssa,
+                    impurities=self.snow_impurities,
                     B=1.6, g=0.845)
             else:
                 spectral_albedo = [
@@ -302,6 +348,7 @@ class Model(object):
                         self.angles["SZA"].data,
                         diffuse_total_ratio,
                         self.ssa,
+                        impurities=self.snow_impurities,
                         B=1.6,
                         g=0.845,
                     )
@@ -337,6 +384,7 @@ class Model(object):
                     self.angles["SAA"] - self.angles["VAA"],
                     wvl,
                     self.ssa,
+                    impurities=self.snow_impurities,
                 )
             else:
                 spectral_brf = [
@@ -346,6 +394,7 @@ class Model(object):
                         self.angles["SAA"] - self.angles["VAA"],
                         spectral_wavelength,
                         self.ssa,
+                        impurities=self.snow_impurities,
                     )
                     for spectral_wavelength in band_definition.wavelength_nm
                 ]

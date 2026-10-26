@@ -47,14 +47,17 @@ def _constant_scene(shape=(2, 2)):
 
 def test_model_integrates_snow_optics_over_sentinel2_response(monkeypatch):
     shape = (2, 2)
+    received_impurities = []
 
     def fake_albedo(wavelength_nm, sza, diffuse_ratio, ssa, **kwargs):
+        received_impurities.append(kwargs["impurities"])
         direct = np.full(shape, wavelength_nm)
         diffuse = np.full(shape, 2.0 * wavelength_nm)
         total = np.full(shape, 3.0 * wavelength_nm)
         return direct, diffuse, total
 
     def fake_brf(theta_i, theta_v, phi, wavelength_nm, ssa, **kwargs):
+        received_impurities.append(kwargs["impurities"])
         return np.full(shape, wavelength_nm)
 
     monkeypatch.setattr(
@@ -68,6 +71,7 @@ def test_model_integrates_snow_optics_over_sentinel2_response(monkeypatch):
     model = Model()
     model.set_sentinel2("S2B", ["B05"])
     model.ssa = 20.0
+    model.set_lap(black_carbon_ng_g=50.0, dust_ug_g=20.0)
     model.angles, model.topo_bands = _constant_scene(shape)
     model.rt_model = _FakeRadiativeTransferModel
     model.set_rt_options(aero="None")
@@ -90,3 +94,8 @@ def test_model_integrates_snow_optics_over_sentinel2_response(monkeypatch):
     assert len(_FakeRadiativeTransferModel.wavelengths) == 1
     assert _FakeRadiativeTransferModel.wavelengths[0] is \
         model.meta["band_definitions"][0].py6s_filter
+    assert received_impurities
+    assert all(
+        impurities == model.snow_impurities
+        for impurities in received_impurities
+    )

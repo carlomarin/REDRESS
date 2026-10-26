@@ -10,7 +10,76 @@ import numpy as np
 import snowoptics as so
 
 
-def albedo_kokhanovsky(wls, sza, dd, ssa, B=1.6, g=0.845):
+DEFAULT_DUST_DENSITY_KG_M3 = 2600.0
+DUST_MODELS = ("muller2011", "skiles2014")
+
+
+def lap_impurities(
+    black_carbon_ng_g=0.0,
+    dust_ug_g=0.0,
+    dust_density_kg_m3=DEFAULT_DUST_DENSITY_KG_M3,
+    dust_model="muller2011",
+):
+    """Build a Snowoptics impurity dictionary from common LAP units.
+
+    Parameters
+    ----------
+    black_carbon_ng_g : float
+        Black-carbon concentration in ng g-1 of snow.
+    dust_ug_g : float
+        Mineral-dust concentration in microgram g-1 of snow.
+    dust_density_kg_m3 : float
+        Bulk density used by Snowoptics to derive the dust mass absorption
+        coefficient. The default represents a generic mineral dust.
+    dust_model : {"muller2011", "skiles2014"}
+        Snowoptics dust refractive-index formulation. Müller et al. (2011)
+        represents the more absorbing formulation.
+
+    Returns
+    -------
+    dict
+        Snowoptics impurity concentrations expressed as kg kg-1. Zero-valued
+        species are omitted.
+    """
+
+    concentrations = {
+        "black_carbon_ng_g": float(black_carbon_ng_g),
+        "dust_ug_g": float(dust_ug_g),
+        "dust_density_kg_m3": float(dust_density_kg_m3),
+    }
+    if not all(np.isfinite(value) for value in concentrations.values()):
+        raise ValueError("LAP concentrations and density must be finite")
+    if concentrations["black_carbon_ng_g"] < 0:
+        raise ValueError("black_carbon_ng_g cannot be negative")
+    if concentrations["dust_ug_g"] < 0:
+        raise ValueError("dust_ug_g cannot be negative")
+    if concentrations["dust_density_kg_m3"] <= 0:
+        raise ValueError("dust_density_kg_m3 must be greater than zero")
+    if dust_model not in DUST_MODELS:
+        choices = ", ".join(DUST_MODELS)
+        raise ValueError(f"dust_model must be one of: {choices}")
+
+    impurities = {}
+    if concentrations["black_carbon_ng_g"] > 0:
+        impurities["BC"] = concentrations["black_carbon_ng_g"] * 1e-9
+    if concentrations["dust_ug_g"] > 0:
+        species = "dust" if dust_model == "muller2011" else "dust_skiles"
+        impurities[species] = (
+            concentrations["dust_ug_g"] * 1e-6,
+            concentrations["dust_density_kg_m3"],
+        )
+    return impurities
+
+
+def albedo_kokhanovsky(
+    wls,
+    sza,
+    dd,
+    ssa,
+    impurities=None,
+    B=1.6,
+    g=0.845,
+):
     """Calculate black sky, white sky and blue sky albedo.
 
     Using the Asymptotic Radiative Transfer theory from Kokhanovsky and Zege,
@@ -28,6 +97,8 @@ def albedo_kokhanovsky(wls, sza, dd, ssa, B=1.6, g=0.845):
     :type dd: ndarray
     :param ssa: Specific surface area of the snow (m2/kg)
     :type ssa: float
+    :param impurities: Snowoptics LAP concentrations in kg/kg
+    :type impurities: dict, optional
     :param B: Snow absorption enhancement parameter
     :type B: float, optional
     :param g: Snow asymmetry factor
@@ -43,9 +114,14 @@ def albedo_kokhanovsky(wls, sza, dd, ssa, B=1.6, g=0.845):
         raise ValueError("solar zenith angles must be in [0, pi/2] radians")
 
     # White-sky albedo does not depend on solar zenith angle.
-    alb_diff_flat_val = so.albedo_diffuse_KZ04(wls_m, ssa,
-                                               impurities={'BC': 0},
-                                               ni="w2008", B=B, g=g)
+    alb_diff_flat_val = so.albedo_diffuse_KZ04(
+        wls_m,
+        ssa,
+        impurities=impurities,
+        ni="w2008",
+        B=B,
+        g=g,
+    )
 
     # Snowoptics 0.99.2 validates the cosine with a scalar assertion. Evaluate
     # each distinct angle once, then restore the original raster shape.
@@ -55,7 +131,7 @@ def albedo_kokhanovsky(wls, sza, dd, ssa, B=1.6, g=0.845):
             wls_m,
             float(angle),
             ssa,
-            impurities={'BC': 0},
+            impurities=impurities,
             ni="w2008",
             B=B,
             g=g,
@@ -79,7 +155,18 @@ def albedo_kokhanovsky(wls, sza, dd, ssa, B=1.6, g=0.845):
     return (alb_dir_flat, alb_diff_flat, alb_kok_flat)
 
 
-def brf_kokhanovsky(theta_i, theta_v, phi, wvl, SSA, b=13, M=0):
+def brf_kokhanovsky(
+    theta_i,
+    theta_v,
+    phi,
+    wvl,
+    SSA,
+    b=13,
+    M=0,
+    impurities=None,
+    B=1.6,
+    g=0.845,
+):
     """Calculate snow BRF.
 
     Snow BRF function from Kokhanovsky et al. Described in DOI:
@@ -100,6 +187,8 @@ def brf_kokhanovsky(theta_i, theta_v, phi, wvl, SSA, b=13, M=0):
     :type b: float, optional
     :param M: proportional to the mass concentration of pollutants in snow
     :type M: float, optional
+    :param impurities: Snowoptics LAP concentrations in kg/kg
+    :type impurities: dict, optional
     :return: BRF
     :rtype: ndarray
     """
@@ -138,7 +227,23 @@ def brf_kokhanovsky(theta_i, theta_v, phi, wvl, SSA, b=13, M=0):
     # get refractive index
     n, ni = so.refractive_index.refice2008(wvl_m)
 
-    gamma = 4 * np.pi * (ni + M) / (wvl_m)
+    gamma = 4 * np.pi * (ni + M) / wvl_m
+
+    if impurities:
+        # Convert the Snowoptics co-single-scattering albedo back to an
+        # equivalent absorption coefficient. This retains the original
+        # REDRESS BRF expression while using the same LAP optical properties
+        # and mass concentrations as the direct and diffuse albedo.
+        rho_ice = 917.0
+        cossalb, _ = so.compute_single_scattering_properties(
+            wvl_m,
+            SSA,
+            impurities=impurities,
+            ni="w2008",
+            B=B,
+            g=g,
+        )
+        gamma = cossalb * SSA * rho_ice / (2.0 * B)
 
     # Alpha = sqrt(gamma * L), with L approximately 13d, where
     # d is the average optical diameter of snow:

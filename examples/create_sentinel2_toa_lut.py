@@ -49,6 +49,10 @@ BASELINE = Sentinel2EndmemberScenario(
     name="baseline",
     category="Baseline",
     specific_surface_area=20.0,
+    black_carbon_ng_g=0.0,
+    dust_ug_g=0.0,
+    dust_density_kg_m3=2600.0,
+    dust_model="muller2011",
     solar_zenith_angle=45.0,
     local_incidence_angle=45.0,
     view_zenith_angle=0.0,
@@ -69,6 +73,14 @@ SCENARIOS = (
             specific_surface_area=5.0),
     replace(BASELINE, name="ssa_60", category="Snow SSA",
             specific_surface_area=60.0),
+    replace(BASELINE, name="bc_50", category="LAP",
+            black_carbon_ng_g=50.0),
+    replace(BASELINE, name="bc_200", category="LAP",
+            black_carbon_ng_g=200.0),
+    replace(BASELINE, name="dust_20", category="LAP",
+            dust_ug_g=20.0),
+    replace(BASELINE, name="dust_200", category="LAP",
+            dust_ug_g=200.0),
     replace(BASELINE, name="sza_20", category="Solar zenith",
             solar_zenith_angle=20.0, local_incidence_angle=20.0),
     replace(BASELINE, name="sza_65", category="Solar zenith",
@@ -106,6 +118,7 @@ SCENARIOS = (
 
 CATEGORIES = (
     "Snow SSA",
+    "LAP",
     "Solar zenith",
     "Local incidence",
     "Atmosphere",
@@ -120,6 +133,10 @@ def _label(lut, scenario_name, category):
     parameters = {
         "Snow SSA": (
             ("specific_surface_area", "SSA", "m² kg⁻¹"),
+        ),
+        "LAP": (
+            ("black_carbon_ng_g", "BC", "ng g⁻¹"),
+            ("dust_ug_g", "Dust", "µg g⁻¹"),
         ),
         "Solar zenith": (
             ("solar_zenith_angle", "SZA", "°"),
@@ -176,8 +193,8 @@ def plot_toa_sensitivity(lut, output_file):
 
     figure, axes = plt.subplots(
         nrows=2,
-        ncols=3,
-        figsize=(16, 9),
+        ncols=4,
+        figsize=(20, 9),
         sharex=True,
         sharey=True,
         constrained_layout=True,
@@ -210,8 +227,12 @@ def plot_toa_sensitivity(lut, output_file):
         axis.set_ylim(0, 1.3)
         axis.legend(fontsize=8)
 
-    for axis in axes[-1, :]:
-        axis.set_xlabel("Wavelength (nm)")
+    for axis in axes.flat[len(CATEGORIES):]:
+        axis.set_visible(False)
+
+    for axis in axes.flat:
+        if axis.get_visible():
+            axis.set_xlabel("Wavelength (nm)")
     for axis in axes[:, 0]:
         axis.set_ylabel("TOA reflectance")
 
