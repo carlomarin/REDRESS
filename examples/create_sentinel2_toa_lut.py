@@ -89,7 +89,7 @@ SCENARIOS = (
             altitude_m=4000.0),
     replace(BASELINE, name="cast_shadow", category="Altitude and terrain",
             shadowed=True, sky_view_factor=0.70,
-            terrain_configuration_factor=0.15),
+            terrain_configuration_factor=0.30),
     replace(BASELINE, name="terrain_reillumination",
             category="Altitude and terrain", sky_view_factor=0.85,
             terrain_configuration_factor=0.15),

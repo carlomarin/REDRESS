@@ -31,8 +31,14 @@ class Sentinel2EndmemberScenario:
     terrain_configuration_factor: float = 0.0
     shadowed: bool = False
 
-    def validate(self) -> None:
-        """Validate physical ranges needed by REDRESS and Py6S."""
+    def validate(self, enforce_view_factor_closure: bool = True) -> None:
+        """Validate physical ranges needed by REDRESS and Py6S.
+
+        REDRESS computes the terrain configuration factor from a DEM as
+        ``ct = 1 - vt``. Synthetic scenarios follow the same bowl closure by
+        default. Closure can be disabled explicitly when the two factors are
+        varied independently in a controlled sensitivity experiment.
+        """
 
         if not self.name.strip():
             raise ValueError("scenario name cannot be empty")
@@ -67,6 +73,18 @@ class Sentinel2EndmemberScenario:
         ):
             if not 0 <= value <= 1:
                 raise ValueError(f"{name} must be in [0, 1]")
+        view_factor_sum = (
+            self.sky_view_factor + self.terrain_configuration_factor
+        )
+        if enforce_view_factor_closure and not np.isclose(
+            view_factor_sum, 1.0, rtol=0.0, atol=1e-6
+        ):
+            raise ValueError(
+                "sky_view_factor and terrain_configuration_factor must sum "
+                "to 1 under the REDRESS bowl approximation; set "
+                "enforce_view_factor_closure=False only for an intentional "
+                "independent-factor sensitivity experiment"
+            )
 
 
 def _coordinate(values: Iterable[float], name: str) -> np.ndarray:
@@ -115,7 +133,12 @@ def _forward_scene(
     scenario: Sentinel2EndmemberScenario,
     scene_size: int,
 ) -> tuple[xr.Dataset, xr.Dataset]:
-    """Create a uniform scene used by the iterative terrain model."""
+    """Create a uniform synthetic scene for diagnostic model experiments.
+
+    Production scenes should obtain ``vt`` and ``ct`` from
+    :meth:`redress.inputs.products.Dem.compute_topo_bands`, which derives both
+    fields from the DEM slope, aspect and horizon.
+    """
 
     if scene_size < 9 or scene_size % 2 == 0:
         raise ValueError("scene_size must be an odd integer of at least 9")
@@ -297,13 +320,17 @@ def create_sentinel2_toa_lut(
     atmospheric_profile: str | None = None,
     case_number: int = 5,
     scene_size: int = 9,
+    enforce_view_factor_closure: bool = True,
 ) -> xr.Dataset:
     """Run REDRESS for named Sentinel-2 TOA endmember scenarios.
 
     The resulting TOA reflectance is derived from the REDRESS TOA radiance,
     the Py6S band solar irradiance and the cosine of the global solar zenith
     angle. A uniform scene is used so the center pixel is unaffected by the
-    convolution boundaries of the iterative terrain model.
+    convolution boundaries of the iterative terrain model. The synthetic sky
+    view and terrain configuration factors must satisfy the REDRESS bowl
+    closure by default. Set ``enforce_view_factor_closure=False`` only when
+    deliberately varying the two factors independently for sensitivity work.
     """
 
     scenarios = tuple(scenarios)
@@ -312,7 +339,9 @@ def create_sentinel2_toa_lut(
     if len({scenario.name for scenario in scenarios}) != len(scenarios):
         raise ValueError("scenario names must be unique")
     for scenario in scenarios:
-        scenario.validate()
+        scenario.validate(
+            enforce_view_factor_closure=enforce_view_factor_closure
+        )
 
     model = Model()
     model.set_sentinel2(platform, band_names)
@@ -399,6 +428,12 @@ def create_sentinel2_toa_lut(
             ),
             "redress_case_number": case_number,
             "scene_size": scene_size,
+            "view_factor_relationship": "terrain factor = 1 - sky view",
+            "view_factor_source": (
+                "prescribed uniform diagnostic scenarios; production "
+                "endmembers must use DEM-derived vt and ct"
+            ),
+            "view_factor_closure_enforced": enforce_view_factor_closure,
         },
     )
 

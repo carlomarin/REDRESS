@@ -3,6 +3,7 @@
 """Tests for Sentinel-2 snow look-up table generation."""
 
 import numpy as np
+import pytest
 import xarray as xr
 
 from redress.lut import (
@@ -94,3 +95,17 @@ def test_toa_lut_preserves_scenario_parameters(monkeypatch):
     assert lut["category"].values.tolist() == ["Baseline", "Atmosphere"]
     assert lut["aod550"].values.tolist() == [0.1, 0.3]
     np.testing.assert_allclose(lut["toa_reflectance"][0], [0.1, 0.2])
+
+
+def test_synthetic_view_factors_follow_redress_bowl_closure():
+    scenario = Sentinel2EndmemberScenario(
+        name="shadow",
+        category="Terrain",
+        sky_view_factor=0.70,
+        terrain_configuration_factor=0.15,
+    )
+
+    with pytest.raises(ValueError, match="must sum to 1"):
+        scenario.validate()
+
+    scenario.validate(enforce_view_factor_closure=False)
