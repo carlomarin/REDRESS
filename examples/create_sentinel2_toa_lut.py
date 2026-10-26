@@ -12,6 +12,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import xarray as xr
 
 from redress.lut import (
     Sentinel2EndmemberScenario,
@@ -244,6 +245,207 @@ def plot_toa_sensitivity(lut, output_file):
     plt.close(figure)
 
 
+def incidence_ratio_diagnostics(
+    lut,
+    low_scenario="incidence_20",
+    high_scenario="incidence_70",
+):
+    """Calculate spectral diagnostics for two local-incidence scenarios.
+
+    The direct surface-radiance term in REDRESS is proportional to
+    ``cos(local incidence) * BRF`` when the global solar geometry and
+    atmosphere are held fixed. Comparing this proxy with the full TOA ratio
+    identifies compensation by the angular BRF and by additive diffuse or
+    atmospheric radiance.
+    """
+
+    low_angle = float(
+        lut["local_incidence_angle"].sel(scenario=low_scenario).item()
+    )
+    high_angle = float(
+        lut["local_incidence_angle"].sel(scenario=high_scenario).item()
+    )
+    low_toa = lut["toa_reflectance"].sel(scenario=low_scenario).values
+    high_toa = lut["toa_reflectance"].sel(scenario=high_scenario).values
+    low_brf = lut["surface_brf"].sel(scenario=low_scenario).values
+    high_brf = lut["surface_brf"].sel(scenario=high_scenario).values
+    low_radiance = lut["toa_radiance"].sel(
+        scenario=low_scenario
+    ).values
+    high_radiance = lut["toa_radiance"].sel(
+        scenario=high_scenario
+    ).values
+    low_direct_radiance = lut["toa_direct_surface_radiance"].sel(
+        scenario=low_scenario
+    ).values
+    high_direct_radiance = lut["toa_direct_surface_radiance"].sel(
+        scenario=high_scenario
+    ).values
+
+    def safe_ratio(numerator, denominator):
+        return np.divide(
+            numerator,
+            denominator,
+            out=np.full_like(numerator, np.nan, dtype=np.float64),
+            where=np.abs(denominator) > np.finfo(np.float32).eps,
+        )
+
+    cosine_ratio = (
+        np.cos(np.deg2rad(low_angle))
+        / np.cos(np.deg2rad(high_angle))
+    )
+    brf_ratio = safe_ratio(low_brf, high_brf)
+
+    diagnostics = xr.Dataset(
+        data_vars={
+            "toa_reflectance_low": ("band", low_toa),
+            "toa_reflectance_high": ("band", high_toa),
+            "toa_reflectance_ratio": (
+                "band", safe_ratio(low_toa, high_toa)
+            ),
+            "surface_brf_low": ("band", low_brf),
+            "surface_brf_high": ("band", high_brf),
+            "surface_brf_ratio": ("band", brf_ratio),
+            "direct_surface_proxy_ratio": (
+                "band", cosine_ratio * brf_ratio
+            ),
+            "direct_surface_radiance_ratio": (
+                "band",
+                safe_ratio(low_direct_radiance, high_direct_radiance),
+            ),
+            "direct_surface_fraction_low": (
+                "band", safe_ratio(low_direct_radiance, low_radiance)
+            ),
+            "direct_surface_fraction_high": (
+                "band", safe_ratio(high_direct_radiance, high_radiance)
+            ),
+        },
+        coords={
+            "band": lut["band"].values,
+            "wavelength_nm": (
+                "band", lut["wavelength_nm"].values
+            ),
+        },
+        attrs={
+            "low_scenario": low_scenario,
+            "high_scenario": high_scenario,
+            "low_local_incidence_degree": low_angle,
+            "high_local_incidence_degree": high_angle,
+            "cosine_ratio": cosine_ratio,
+            "direct_surface_proxy": "cos(local incidence) * surface BRF",
+        },
+    )
+    for variable in diagnostics.data_vars:
+        diagnostics[variable].attrs["units"] = "1"
+    return diagnostics
+
+
+def plot_incidence_ratio(diagnostics, output_file):
+    """Plot TOA and direct-surface incidence ratios by wavelength."""
+
+    wavelength = diagnostics["wavelength_nm"].values
+    toa_ratio = diagnostics["toa_reflectance_ratio"].values
+    brf_ratio = diagnostics["surface_brf_ratio"].values
+    direct_ratio = diagnostics["direct_surface_proxy_ratio"].values
+    direct_radiance_ratio = diagnostics[
+        "direct_surface_radiance_ratio"
+    ].values
+    direct_fraction_low = diagnostics[
+        "direct_surface_fraction_low"
+    ].values
+    direct_fraction_high = diagnostics[
+        "direct_surface_fraction_high"
+    ].values
+    cosine_ratio = diagnostics.attrs["cosine_ratio"]
+    low_angle = diagnostics.attrs["low_local_incidence_degree"]
+    high_angle = diagnostics.attrs["high_local_incidence_degree"]
+
+    figure, axes = plt.subplots(
+        nrows=3,
+        ncols=1,
+        figsize=(10, 11),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axes[0].plot(wavelength, toa_ratio, marker="o", linewidth=2)
+    axes[0].axhline(1.0, color="0.4", linestyle="--", linewidth=1)
+    axes[0].set_ylabel("TOA-reflectance ratio")
+    axes[0].set_title(
+        f"TOA({low_angle:g}°) / TOA({high_angle:g}°)"
+    )
+
+    axes[1].plot(
+        wavelength,
+        brf_ratio,
+        marker="o",
+        label="BRF ratio",
+    )
+    axes[1].plot(
+        wavelength,
+        direct_ratio,
+        marker="s",
+        label="cos(i) × BRF ratio",
+    )
+    axes[1].plot(
+        wavelength,
+        direct_radiance_ratio,
+        marker="^",
+        linestyle="--",
+        label="Direct-radiance ratio",
+    )
+    axes[1].axhline(
+        cosine_ratio,
+        color="0.4",
+        linestyle=":",
+        label=f"cosine ratio = {cosine_ratio:.2f}",
+    )
+    axes[1].axhline(1.0, color="0.4", linestyle="--", linewidth=1)
+    axes[1].set_ylabel("Ratio")
+    axes[1].set_title("Direct surface-radiance decomposition")
+    axes[1].legend()
+
+    axes[2].plot(
+        wavelength,
+        direct_fraction_low,
+        marker="o",
+        label=f"Incidence {low_angle:g}°",
+    )
+    axes[2].plot(
+        wavelength,
+        direct_fraction_high,
+        marker="s",
+        label=f"Incidence {high_angle:g}°",
+    )
+    axes[2].set_xlabel("Wavelength (nm)")
+    axes[2].set_ylabel("Direct / total TOA radiance")
+    axes[2].set_ylim(0, 1.05)
+    axes[2].set_title("Direct surface contribution to the TOA signal")
+    axes[2].legend()
+
+    for axis in axes:
+        axis.grid(alpha=0.25)
+        for band in ("B11", "B12"):
+            if band not in diagnostics["band"].values:
+                continue
+            band_wavelength = diagnostics["wavelength_nm"].sel(
+                band=band
+            ).item()
+            band_value = diagnostics["toa_reflectance_ratio"].sel(
+                band=band
+            ).item()
+            if axis is axes[0]:
+                axis.annotate(
+                    band,
+                    (band_wavelength, band_value),
+                    xytext=(4, 6),
+                    textcoords="offset points",
+                )
+
+    figure.savefig(output_file, dpi=250, bbox_inches="tight")
+    plt.close(figure)
+
+
 def main():
     """Generate, save and plot the diagnostic LUT."""
 
@@ -264,6 +466,12 @@ def main():
     netcdf_file = OUTPUT_DIRECTORY / f"{PLATFORM}_toa_endmember_lut.nc"
     csv_file = OUTPUT_DIRECTORY / f"{PLATFORM}_toa_endmember_lut.csv"
     figure_file = OUTPUT_DIRECTORY / f"{PLATFORM}_toa_sensitivity.png"
+    incidence_csv_file = (
+        OUTPUT_DIRECTORY / f"{PLATFORM}_incidence_ratio.csv"
+    )
+    incidence_figure_file = (
+        OUTPUT_DIRECTORY / f"{PLATFORM}_incidence_ratio.png"
+    )
 
     encoding = {
         variable: {"dtype": "float32", "zlib": True, "complevel": 4}
@@ -272,11 +480,19 @@ def main():
     lut.to_netcdf(netcdf_file, encoding=encoding)
     lut.to_dataframe().reset_index().to_csv(csv_file, index=False)
     plot_toa_sensitivity(lut, figure_file)
+    incidence_diagnostics = incidence_ratio_diagnostics(lut)
+    incidence_diagnostics.to_dataframe().reset_index().to_csv(
+        incidence_csv_file,
+        index=False,
+    )
+    plot_incidence_ratio(incidence_diagnostics, incidence_figure_file)
 
     print(lut)
     print(f"NetCDF LUT: {netcdf_file.resolve()}")
     print(f"CSV LUT:    {csv_file.resolve()}")
     print(f"Figure:     {figure_file.resolve()}")
+    print(f"Ratio CSV:  {incidence_csv_file.resolve()}")
+    print(f"Ratio plot: {incidence_figure_file.resolve()}")
 
 
 if __name__ == "__main__":

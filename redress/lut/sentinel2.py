@@ -376,6 +376,15 @@ def create_sentinel2_toa_lut(
     surface_brf = np.empty_like(toa_radiance)
     direct_albedo = np.empty_like(toa_radiance)
     diffuse_albedo = np.empty_like(toa_radiance)
+    component_names = (
+        "direct_surface",
+        "diffuse_surface",
+        "neighbour_atmosphere",
+        "atmospheric_path",
+    )
+    radiance_components = {
+        name: np.empty_like(toa_radiance) for name in component_names
+    }
 
     center = scene_size // 2
     for scenario_index, scenario in enumerate(scenarios):
@@ -416,6 +425,12 @@ def create_sentinel2_toa_lut(
                 np.asarray(model.albedo["direct"][band_index])[center, center]
             diffuse_albedo[scenario_index, band_index] = \
                 np.asarray(model.albedo["diffuse"][band_index])[center, center]
+            for component_name in component_names:
+                radiance_components[component_name][
+                    scenario_index, band_index
+                ] = model.toa_components[component_name][band_name].values[
+                    center, center
+                ]
 
     scenario_fields = asdict(scenarios[0]).keys()
     coordinates = {
@@ -433,14 +448,20 @@ def create_sentinel2_toa_lut(
             "scenario", [getattr(scenario, field) for scenario in scenarios]
         )
 
+    data_variables = {
+        "surface_brf": (("scenario", "band"), surface_brf),
+        "direct_albedo": (("scenario", "band"), direct_albedo),
+        "diffuse_albedo": (("scenario", "band"), diffuse_albedo),
+        "toa_radiance": (("scenario", "band"), toa_radiance),
+        "toa_reflectance": (("scenario", "band"), toa_reflectance),
+    }
+    data_variables.update({
+        f"toa_{name}_radiance": (("scenario", "band"), values)
+        for name, values in radiance_components.items()
+    })
+
     dataset = xr.Dataset(
-        data_vars={
-            "surface_brf": (("scenario", "band"), surface_brf),
-            "direct_albedo": (("scenario", "band"), direct_albedo),
-            "diffuse_albedo": (("scenario", "band"), diffuse_albedo),
-            "toa_radiance": (("scenario", "band"), toa_radiance),
-            "toa_reflectance": (("scenario", "band"), toa_reflectance),
-        },
+        data_vars=data_variables,
         coords=coordinates,
         attrs={
             "title": "REDRESS Sentinel-2 TOA snow endmember LUT",
@@ -485,6 +506,19 @@ def create_sentinel2_toa_lut(
         "top-of-atmosphere reflectance"
     dataset["surface_brf"].attrs["long_name"] = \
         "surface bidirectional reflectance factor"
+    component_long_names = {
+        "direct_surface": "direct surface-reflected TOA radiance",
+        "diffuse_surface": "diffuse surface-reflected TOA radiance",
+        "neighbour_atmosphere": (
+            "neighbour-atmosphere coupling TOA radiance"
+        ),
+        "atmospheric_path": "atmospheric path radiance",
+    }
+    for component_name, long_name in component_long_names.items():
+        dataset[f"toa_{component_name}_radiance"].attrs.update(
+            long_name=long_name,
+            units="W m-2 sr-1 um-1",
+        )
 
     coordinate_units = {
         "specific_surface_area": "m2 kg-1",

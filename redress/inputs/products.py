@@ -199,6 +199,7 @@ class Model(object):
         self.case = Cases()
         self.toa_rad = xr.Dataset()
         self.toa_reflectance = xr.Dataset()
+        self.toa_components = {}
         self.geotransform = None
     # TODO: make a copy attributes function in class to copy attributes from other class
     def import_rt_model(self, rt_name):
@@ -408,6 +409,15 @@ class Model(object):
 
         self.toa_rad = xr.Dataset()
         self.toa_reflectance = xr.Dataset()
+        component_names = (
+            "direct_surface",
+            "diffuse_surface",
+            "neighbour_atmosphere",
+            "atmospheric_path",
+        )
+        self.toa_components = {
+            name: xr.Dataset() for name in component_names
+        }
 
         # Compute albedo
         self.compute_albedo()
@@ -433,23 +443,27 @@ class Model(object):
             rt_wavelength = (definition.py6s_filter
                              if definition is not None else wvl)
 
-            synthetic_toa_radiance, synthetic_toa_reflectance = \
-                iterative_radiance(self.topo_bands,
-                                   self.angles,
-                                   wvl,
-                                   hdr,
-                                   bhr,
-                                   self.rt_model(),
-                                   self.rt_options,
-                                   np.asarray(brf[1]),
-                                   case,
-                                   tw=5,
-                                   aw=7,
-                                   dif_anis=False,
-                                   rt_wavelength=rt_wavelength,
-                                   return_reflectance=True,
-                                   verbose=verbose,
-                                   )
+            result = iterative_radiance(
+                self.topo_bands,
+                self.angles,
+                wvl,
+                hdr,
+                bhr,
+                self.rt_model(),
+                self.rt_options,
+                np.asarray(brf[1]),
+                case,
+                tw=5,
+                aw=7,
+                dif_anis=False,
+                rt_wavelength=rt_wavelength,
+                return_reflectance=True,
+                return_components=True,
+                verbose=verbose,
+            )
+            (synthetic_toa_radiance,
+             synthetic_toa_reflectance,
+             radiance_components) = result
             self.toa_rad[band] = xr.DataArray(synthetic_toa_radiance,
                                               dims=['x', 'y'],
                                               coords=self.topo_bands.coords)
@@ -458,4 +472,12 @@ class Model(object):
                 dims=['x', 'y'],
                 coords=self.topo_bands.coords,
             )
+            for component_name, component_values in (
+                radiance_components.items()
+            ):
+                self.toa_components[component_name][band] = xr.DataArray(
+                    component_values,
+                    dims=['x', 'y'],
+                    coords=self.topo_bands.coords,
+                )
 

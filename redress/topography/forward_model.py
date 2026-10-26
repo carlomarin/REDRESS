@@ -126,6 +126,7 @@ def iterative_radiance(
     dif_anis=False,
     rt_wavelength=None,
     return_reflectance=False,
+    return_components=False,
     max_iterations=100,
     verbose=True,
 ):
@@ -390,7 +391,21 @@ def iterative_radiance(
         )
 
     toa_radiance = l_toa[:, :, -1]
+    components = {
+        "direct_surface": LdP,
+        "diffuse_surface": LhP,
+        "neighbour_atmosphere": LtNA,
+        "atmospheric_path": LtA,
+    }
+    components = {
+        name: np.broadcast_to(
+            np.asarray(value, dtype=np.float64), toa_radiance.shape
+        ).copy()
+        for name, value in components.items()
+    }
     if not return_reflectance:
+        if return_components:
+            return toa_radiance, components
         return toa_radiance
 
     reflectance_denominator = Eo * cos_sza
@@ -400,5 +415,7 @@ def iterative_radiance(
         out=np.full_like(toa_radiance, np.nan, dtype=np.float64),
         where=reflectance_denominator > 0,
     )
+    if return_components:
+        return toa_radiance, toa_reflectance, components
     return toa_radiance, toa_reflectance
 

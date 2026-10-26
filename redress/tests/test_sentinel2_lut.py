@@ -69,6 +69,21 @@ def test_toa_lut_preserves_scenario_parameters(monkeypatch):
                 band: (("x", "y"), np.full(shape, 0.1 * (index + 1)))
                 for index, band in enumerate(bands)
             })
+            self.toa_components = {
+                component: xr.Dataset({
+                    band: (
+                        ("x", "y"),
+                        np.full(shape, value * (index + 1)),
+                    )
+                    for index, band in enumerate(bands)
+                })
+                for component, value in (
+                    ("direct_surface", 0.4),
+                    ("diffuse_surface", 0.3),
+                    ("neighbour_atmosphere", 0.2),
+                    ("atmospheric_path", 0.1),
+                )
+            }
             self.brf = [
                 (wavelength, np.full(shape, 0.2 * (index + 1)))
                 for index, wavelength in enumerate(self.meta["wavelengths"])
@@ -100,6 +115,16 @@ def test_toa_lut_preserves_scenario_parameters(monkeypatch):
     assert lut["aod550"].values.tolist() == [0.1, 0.3]
     assert lut["black_carbon_ng_g"].values.tolist() == [0.0, 100.0]
     np.testing.assert_allclose(lut["toa_reflectance"][0], [0.1, 0.2])
+    component_sum = sum(
+        lut[f"toa_{component}_radiance"]
+        for component in (
+            "direct_surface",
+            "diffuse_surface",
+            "neighbour_atmosphere",
+            "atmospheric_path",
+        )
+    )
+    np.testing.assert_allclose(component_sum, lut["toa_radiance"])
 
 
 def test_synthetic_view_factors_follow_redress_bowl_closure():
