@@ -114,17 +114,64 @@ CATEGORIES = (
 )
 
 
-def _label(scenario_name):
-    """Return a compact human-readable plot label."""
+def _label(lut, scenario_name, category):
+    """Describe the panel parameters using values stored in the LUT."""
 
-    return scenario_name.replace("_", " ")
+    parameters = {
+        "Snow SSA": (
+            ("specific_surface_area", "SSA", "m² kg⁻¹"),
+        ),
+        "Solar zenith": (
+            ("solar_zenith_angle", "SZA", "°"),
+            ("local_incidence_angle", "Incidence", "°"),
+        ),
+        "Local incidence": (
+            ("local_incidence_angle", "Incidence", "°"),
+        ),
+        "Atmosphere": (
+            ("aod550", "AOD550", ""),
+            ("water_vapour_g_cm2", "Water", "g cm⁻²"),
+            ("ozone_cm_atm", "Ozone", "cm-atm"),
+        ),
+        "Altitude and terrain": (
+            ("altitude_m", "Altitude", "m"),
+            ("sky_view_factor", "Sky view", ""),
+            ("terrain_configuration_factor", "Terrain factor", ""),
+            ("shadowed", "Shadow", ""),
+        ),
+        "Viewing geometry": (
+            ("view_zenith_angle", "VZA", "°"),
+            ("local_view_zenith_angle", "Local VZA", "°"),
+            ("relative_azimuth_angle", "RAA", "°"),
+        ),
+    }
+
+    descriptions = []
+    for coordinate, label, unit in parameters[category]:
+        value = lut[coordinate].sel(scenario=scenario_name).item()
+        baseline_value = lut[coordinate].sel(scenario="baseline").item()
+        if scenario_name != "baseline" and value == baseline_value:
+            continue
+        if coordinate == "shadowed":
+            description = f"{label}={'yes' if value else 'no'}"
+        else:
+            spacing = " " if unit and unit != "°" else ""
+            description = f"{label}={value:g}{spacing}{unit}"
+        descriptions.append(description)
+
+    # Wrap longer legends to keep the spectra visible.
+    lines = [
+        ", ".join(descriptions[index:index + 2])
+        for index in range(0, len(descriptions), 2)
+    ]
+    prefix = "Baseline: " if scenario_name == "baseline" else ""
+    return prefix + "\n".join(lines)
 
 
 def plot_toa_sensitivity(lut, output_file):
     """Plot TOA-reflectance spectra grouped by physical process."""
 
     wavelength = lut["wavelength_nm"].values
-    band_names = lut["band"].values
     categories = lut["category"].values
 
     figure, axes = plt.subplots(
@@ -154,28 +201,22 @@ def plot_toa_sensitivity(lut, output_file):
                 spectrum,
                 marker="o",
                 linewidth=linewidth,
-                color=color,
-                label=_label(scenario_name),
+                color="black" if scenario_name == "baseline" else color,
+                label=_label(lut, scenario_name, category),
             )
 
         axis.set_title(category)
         axis.grid(alpha=0.25)
-        axis.set_ylim(bottom=0)
+        axis.set_ylim(0, 1.3)
         axis.legend(fontsize=8)
 
-    tick_labels = [
-        f"{band}\n{central_wavelength:.0f}"
-        for band, central_wavelength in zip(band_names, wavelength)
-    ]
     for axis in axes[-1, :]:
-        axis.set_xticks(wavelength)
-        axis.set_xticklabels(tick_labels, rotation=45, ha="right")
-        axis.set_xlabel("Sentinel-2 band and effective wavelength (nm)")
+        axis.set_xlabel("Wavelength (nm)")
     for axis in axes[:, 0]:
         axis.set_ylabel("TOA reflectance")
 
     figure.suptitle(
-        f"REDRESS {PLATFORM} TOA snow endmember sensitivity",
+        f"REDRESS {lut.attrs['platform']} TOA snow endmember sensitivity",
         fontsize=15,
     )
     figure.savefig(output_file, dpi=250, bbox_inches="tight")
