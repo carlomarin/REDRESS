@@ -10,11 +10,37 @@ import xarray as xr
 
 from redress.topography.forward_model import (
     Cases,
+    _anisotropic_sky_factor,
     _window_mean,
     _solar_irradiance_density,
     iterative_radiance,
     window_size_from_distance,
 )
+
+
+def test_anisotropic_sky_factor_respects_sky_view_in_shadow():
+    beam_visibility = np.array([0.0, 1.0])
+    direct_transmittance = 0.8
+    cos_local_incidence = np.cos(np.deg2rad([70.0, 30.0]))
+    cos_solar_zenith = np.cos(np.deg2rad(45.0))
+    sky_view_factor = np.array([0.35, 0.35])
+
+    result = _anisotropic_sky_factor(
+        beam_visibility,
+        direct_transmittance,
+        cos_local_incidence,
+        cos_solar_zenith,
+        sky_view_factor,
+    )
+
+    expected_illuminated = (
+        direct_transmittance
+        * cos_local_incidence[1]
+        / cos_solar_zenith
+        + (1 - direct_transmittance) * sky_view_factor[1]
+    )
+    assert result[0] == pytest.approx(sky_view_factor[0])
+    assert result[1] == pytest.approx(expected_illuminated)
 
 
 @pytest.mark.parametrize(

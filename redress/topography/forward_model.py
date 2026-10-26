@@ -73,6 +73,29 @@ def _window_mean(values, window_size, boundary="nearest"):
     )
 
 
+def _anisotropic_sky_factor(
+    beam_visibility,
+    direct_transmittance,
+    cos_local_incidence,
+    cos_solar_zenith,
+    sky_view_factor,
+):
+    """Return the Hay anisotropic diffuse-sky scaling factor.
+
+    The circumsolar component follows the local incidence angle. The
+    remaining isotropic component is reduced by the fraction of sky visible
+    from the pixel. ``beam_visibility`` ranges from one for a fully
+    illuminated pixel to zero for a fully shaded pixel.
+    """
+
+    anisotropy_index = beam_visibility * direct_transmittance
+    circumsolar = anisotropy_index * (
+        cos_local_incidence / cos_solar_zenith
+    )
+    isotropic = (1 - anisotropy_index) * sky_view_factor
+    return circumsolar + isotropic
+
+
 def _solar_irradiance_density(outputs):
     """Return Py6S extraterrestrial solar irradiance in W m-2 um-1.
 
@@ -364,8 +387,13 @@ def iterative_radiance(
         else:
             # Account for anisotropy of diffuse irradiance at grazing
             # angles, eq. 16
-            vd = bb * T_dir_dn * (cos_sza_eff / cos_sza) + (
-                1 - bb * T_dir_dn * topo_bands["vt"])
+            vd = _anisotropic_sky_factor(
+                beam_visibility=bb,
+                direct_transmittance=T_dir_dn,
+                cos_local_incidence=cos_sza_eff,
+                cos_solar_zenith=cos_sza,
+                sky_view_factor=topo_bands["vt"],
+            )
 
     # Contribution of the neighbouring slopes to the satellite signal
     # Set to zero (modified in iteration for full run)
