@@ -195,7 +195,12 @@ class Model(object):
         self.rt_options = {}
         self.difftot = []
         self.brf = []
-        self.albedo = {"total": [], "direct": [], "diffuse": []}
+        self.albedo = {
+            "total": [],
+            "direct": [],
+            "diffuse": [],
+            "hdr": [],
+        }
         self.case = Cases()
         self.toa_rad = xr.Dataset()
         self.toa_reflectance = xr.Dataset()
@@ -293,7 +298,12 @@ class Model(object):
                              " been set.")
 
         self.difftot = []
-        self.albedo = {"total": [], "direct": [], "diffuse": []}
+        self.albedo = {
+            "total": [],
+            "direct": [],
+            "diffuse": [],
+            "hdr": [],
+        }
         band_definitions = self.meta.get("band_definitions")
 
         if band_definitions is not None:
@@ -334,20 +344,46 @@ class Model(object):
 
             self.difftot.append(diffuse_total_ratio)
 
+            local_incidence = self.topo_bands["eff_sza"].data
+            local_view_zenith = self.topo_bands["eff_vza"].data
+
+            # The direct albedo is the DHR at local incidence. Equation 5 of
+            # Lamare et al. (2020) instead requires the pixel HDR at the local
+            # viewing angle. BRDF reciprocity permits calculation of that HDR
+            # with the same directional-albedo function evaluated at eff_vza.
             if band_definition is None:
                 alb_dir, alb_diff, alb_tot = snow.albedo_kokhanovsky(
                     wvl,
-                    self.angles["SZA"].data,
+                    local_incidence,
                     diffuse_total_ratio,
                     self.ssa,
                     impurities=self.snow_impurities,
                     B=1.6, g=0.845)
+                hdr = snow.directional_albedo_kokhanovsky(
+                    wvl,
+                    local_view_zenith,
+                    self.ssa,
+                    impurities=self.snow_impurities,
+                    B=1.6,
+                    g=0.845,
+                )
             else:
                 spectral_albedo = [
                     snow.albedo_kokhanovsky(
                         spectral_wavelength,
-                        self.angles["SZA"].data,
+                        local_incidence,
                         diffuse_total_ratio,
+                        self.ssa,
+                        impurities=self.snow_impurities,
+                        B=1.6,
+                        g=0.845,
+                    )
+                    for spectral_wavelength in band_definition.wavelength_nm
+                ]
+                spectral_hdr = [
+                    snow.directional_albedo_kokhanovsky(
+                        spectral_wavelength,
+                        local_view_zenith,
                         self.ssa,
                         impurities=self.snow_impurities,
                         B=1.6,
@@ -364,10 +400,14 @@ class Model(object):
                 alb_tot = band_definition.integrate_spectral_values(
                     np.stack([value[2] for value in spectral_albedo]), axis=0
                 )
+                hdr = band_definition.integrate_spectral_values(
+                    np.stack(spectral_hdr), axis=0
+                )
 
             self.albedo["direct"].append(alb_dir)
             self.albedo["diffuse"].append(alb_diff)
             self.albedo["total"].append(alb_tot)
+            self.albedo["hdr"].append(hdr)
 
     def compute_brf(self):
         self.brf = []
@@ -436,7 +476,7 @@ class Model(object):
                 self.meta["bandlist"],
                 self.meta["wavelengths"],
                 band_definitions,
-                self.albedo["direct"],
+                self.albedo["hdr"],
                 self.albedo["diffuse"],
                 self.brf):
 

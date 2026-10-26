@@ -269,6 +269,18 @@ def incidence_ratio_diagnostics(
     high_toa = lut["toa_reflectance"].sel(scenario=high_scenario).values
     low_brf = lut["surface_brf"].sel(scenario=low_scenario).values
     high_brf = lut["surface_brf"].sel(scenario=high_scenario).values
+    low_direct_albedo = lut["direct_albedo"].sel(
+        scenario=low_scenario
+    ).values
+    high_direct_albedo = lut["direct_albedo"].sel(
+        scenario=high_scenario
+    ).values
+    low_hdr = lut["hemispherical_directional_reflectance"].sel(
+        scenario=low_scenario
+    ).values
+    high_hdr = lut["hemispherical_directional_reflectance"].sel(
+        scenario=high_scenario
+    ).values
     low_radiance = lut["toa_radiance"].sel(
         scenario=low_scenario
     ).values
@@ -306,6 +318,12 @@ def incidence_ratio_diagnostics(
             "surface_brf_low": ("band", low_brf),
             "surface_brf_high": ("band", high_brf),
             "surface_brf_ratio": ("band", brf_ratio),
+            "direct_albedo_ratio": (
+                "band", safe_ratio(low_direct_albedo, high_direct_albedo)
+            ),
+            "hemispherical_directional_reflectance_ratio": (
+                "band", safe_ratio(low_hdr, high_hdr)
+            ),
             "direct_surface_proxy_ratio": (
                 "band", cosine_ratio * brf_ratio
             ),
@@ -346,6 +364,10 @@ def plot_incidence_ratio(diagnostics, output_file):
     wavelength = diagnostics["wavelength_nm"].values
     toa_ratio = diagnostics["toa_reflectance_ratio"].values
     brf_ratio = diagnostics["surface_brf_ratio"].values
+    direct_albedo_ratio = diagnostics["direct_albedo_ratio"].values
+    hdr_ratio = diagnostics[
+        "hemispherical_directional_reflectance_ratio"
+    ].values
     direct_ratio = diagnostics["direct_surface_proxy_ratio"].values
     direct_radiance_ratio = diagnostics[
         "direct_surface_radiance_ratio"
@@ -361,9 +383,9 @@ def plot_incidence_ratio(diagnostics, output_file):
     high_angle = diagnostics.attrs["high_local_incidence_degree"]
 
     figure, axes = plt.subplots(
-        nrows=3,
+        nrows=4,
         ncols=1,
-        figsize=(10, 11),
+        figsize=(10, 14),
         sharex=True,
         constrained_layout=True,
     )
@@ -383,45 +405,62 @@ def plot_incidence_ratio(diagnostics, output_file):
     )
     axes[1].plot(
         wavelength,
+        direct_albedo_ratio,
+        marker="s",
+        label="Direct-albedo ratio",
+    )
+    axes[1].plot(
+        wavelength,
+        hdr_ratio,
+        marker="^",
+        label="HDR ratio",
+    )
+    axes[1].axhline(1.0, color="0.4", linestyle="--", linewidth=1)
+    axes[1].set_ylabel("Ratio")
+    axes[1].set_title("Angular surface-reflectance quantities")
+    axes[1].legend()
+
+    axes[2].plot(
+        wavelength,
         direct_ratio,
         marker="s",
         label="cos(i) × BRF ratio",
     )
-    axes[1].plot(
+    axes[2].plot(
         wavelength,
         direct_radiance_ratio,
         marker="^",
         linestyle="--",
         label="Direct-radiance ratio",
     )
-    axes[1].axhline(
+    axes[2].axhline(
         cosine_ratio,
         color="0.4",
         linestyle=":",
         label=f"cosine ratio = {cosine_ratio:.2f}",
     )
-    axes[1].axhline(1.0, color="0.4", linestyle="--", linewidth=1)
-    axes[1].set_ylabel("Ratio")
-    axes[1].set_title("Direct surface-radiance decomposition")
-    axes[1].legend()
+    axes[2].axhline(1.0, color="0.4", linestyle="--", linewidth=1)
+    axes[2].set_ylabel("Ratio")
+    axes[2].set_title("Direct surface-radiance decomposition")
+    axes[2].legend()
 
-    axes[2].plot(
+    axes[3].plot(
         wavelength,
         direct_fraction_low,
         marker="o",
         label=f"Incidence {low_angle:g}°",
     )
-    axes[2].plot(
+    axes[3].plot(
         wavelength,
         direct_fraction_high,
         marker="s",
         label=f"Incidence {high_angle:g}°",
     )
-    axes[2].set_xlabel("Wavelength (nm)")
-    axes[2].set_ylabel("Direct / total TOA radiance")
-    axes[2].set_ylim(0, 1.05)
-    axes[2].set_title("Direct surface contribution to the TOA signal")
-    axes[2].legend()
+    axes[3].set_xlabel("Wavelength (nm)")
+    axes[3].set_ylabel("Direct / total TOA radiance")
+    axes[3].set_ylim(0, 1.05)
+    axes[3].set_title("Direct surface contribution to the TOA signal")
+    axes[3].legend()
 
     for axis in axes:
         axis.grid(alpha=0.25)

@@ -123,22 +123,14 @@ def albedo_kokhanovsky(
         g=g,
     )
 
-    # Snowoptics 0.99.2 validates the cosine with a scalar assertion. Evaluate
-    # each distinct angle once, then restore the original raster shape.
-    unique_sza, inverse = np.unique(sza, return_inverse=True)
-    unique_direct_albedo = np.asarray([
-        so.albedo_direct_KZ04(
-            wls_m,
-            float(angle),
-            ssa,
-            impurities=impurities,
-            ni="w2008",
-            B=B,
-            g=g,
-        )
-        for angle in unique_sza
-    ])
-    alb_dir_flat = unique_direct_albedo[inverse].reshape(sza.shape)
+    alb_dir_flat = directional_albedo_kokhanovsky(
+        wls,
+        sza,
+        ssa,
+        impurities=impurities,
+        B=B,
+        g=g,
+    )
 
     # Make diffuse albedo and diffuse fraction conform to the angle grid.
     alb_diff_flat = np.full(sza.shape, alb_diff_flat_val, dtype=np.float64)
@@ -153,6 +145,44 @@ def albedo_kokhanovsky(
     )
 
     return (alb_dir_flat, alb_diff_flat, alb_kok_flat)
+
+
+def directional_albedo_kokhanovsky(
+    wls,
+    zenith,
+    ssa,
+    impurities=None,
+    B=1.6,
+    g=0.845,
+):
+    """Calculate directional-hemispherical snow reflectance.
+
+    Through BRDF reciprocity, evaluating this quantity at the local viewing
+    zenith also gives the hemispherical-directional reflectance required for
+    diffuse illumination in the REDRESS forward model.
+    """
+
+    wavelength_m = wls * 1e-9
+    zenith = np.asarray(zenith, dtype=np.float64)
+    if np.any((zenith < 0) | (zenith > np.pi / 2)):
+        raise ValueError("zenith angles must be in [0, pi/2] radians")
+
+    # Snowoptics 0.99.2 validates the cosine with a scalar assertion. Evaluate
+    # each distinct angle once, then restore the original raster shape.
+    unique_zenith, inverse = np.unique(zenith, return_inverse=True)
+    unique_albedo = np.asarray([
+        so.albedo_direct_KZ04(
+            wavelength_m,
+            float(angle),
+            ssa,
+            impurities=impurities,
+            ni="w2008",
+            B=B,
+            g=g,
+        )
+        for angle in unique_zenith
+    ])
+    return unique_albedo[inverse].reshape(zenith.shape)
 
 
 def brf_kokhanovsky(

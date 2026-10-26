@@ -376,6 +376,8 @@ def create_sentinel2_toa_lut(
     surface_brf = np.empty_like(toa_radiance)
     direct_albedo = np.empty_like(toa_radiance)
     diffuse_albedo = np.empty_like(toa_radiance)
+    blue_sky_albedo = np.empty_like(toa_radiance)
+    hemispherical_directional_reflectance = np.empty_like(toa_radiance)
     component_names = (
         "direct_surface",
         "diffuse_surface",
@@ -425,6 +427,11 @@ def create_sentinel2_toa_lut(
                 np.asarray(model.albedo["direct"][band_index])[center, center]
             diffuse_albedo[scenario_index, band_index] = \
                 np.asarray(model.albedo["diffuse"][band_index])[center, center]
+            blue_sky_albedo[scenario_index, band_index] = \
+                np.asarray(model.albedo["total"][band_index])[center, center]
+            hemispherical_directional_reflectance[
+                scenario_index, band_index
+            ] = np.asarray(model.albedo["hdr"][band_index])[center, center]
             for component_name in component_names:
                 radiance_components[component_name][
                     scenario_index, band_index
@@ -452,6 +459,11 @@ def create_sentinel2_toa_lut(
         "surface_brf": (("scenario", "band"), surface_brf),
         "direct_albedo": (("scenario", "band"), direct_albedo),
         "diffuse_albedo": (("scenario", "band"), diffuse_albedo),
+        "blue_sky_albedo": (("scenario", "band"), blue_sky_albedo),
+        "hemispherical_directional_reflectance": (
+            ("scenario", "band"),
+            hemispherical_directional_reflectance,
+        ),
         "toa_radiance": (("scenario", "band"), toa_radiance),
         "toa_reflectance": (("scenario", "band"), toa_reflectance),
     }
@@ -495,7 +507,12 @@ def create_sentinel2_toa_lut(
     )
 
     for variable in (
-        "surface_brf", "direct_albedo", "diffuse_albedo", "toa_reflectance"
+        "surface_brf",
+        "direct_albedo",
+        "diffuse_albedo",
+        "blue_sky_albedo",
+        "hemispherical_directional_reflectance",
+        "toa_reflectance",
     ):
         dataset[variable].attrs["units"] = "1"
     dataset["toa_radiance"].attrs.update(
@@ -506,6 +523,15 @@ def create_sentinel2_toa_lut(
         "top-of-atmosphere reflectance"
     dataset["surface_brf"].attrs["long_name"] = \
         "surface bidirectional reflectance factor"
+    dataset["direct_albedo"].attrs["long_name"] = \
+        "directional-hemispherical reflectance at local incidence"
+    dataset["diffuse_albedo"].attrs["long_name"] = \
+        "bi-hemispherical reflectance"
+    dataset["blue_sky_albedo"].attrs["long_name"] = \
+        "direct-diffuse weighted albedo at local incidence"
+    dataset["hemispherical_directional_reflectance"].attrs[
+        "long_name"
+    ] = "hemispherical-directional reflectance at local viewing angle"
     component_long_names = {
         "direct_surface": "direct surface-reflected TOA radiance",
         "diffuse_surface": "diffuse surface-reflected TOA radiance",

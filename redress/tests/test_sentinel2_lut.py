@@ -91,6 +91,8 @@ def test_toa_lut_preserves_scenario_parameters(monkeypatch):
             self.albedo = {
                 "direct": [np.full(shape, 0.3), np.full(shape, 0.4)],
                 "diffuse": [np.full(shape, 0.5), np.full(shape, 0.6)],
+                "total": [np.full(shape, 0.4), np.full(shape, 0.5)],
+                "hdr": [np.full(shape, 0.7), np.full(shape, 0.8)],
             }
 
     monkeypatch.setattr("redress.lut.sentinel2.Model", FakeModel)
@@ -115,6 +117,10 @@ def test_toa_lut_preserves_scenario_parameters(monkeypatch):
     assert lut["aod550"].values.tolist() == [0.1, 0.3]
     assert lut["black_carbon_ng_g"].values.tolist() == [0.0, 100.0]
     np.testing.assert_allclose(lut["toa_reflectance"][0], [0.1, 0.2])
+    np.testing.assert_allclose(
+        lut["hemispherical_directional_reflectance"][0],
+        [0.7, 0.8],
+    )
     component_sum = sum(
         lut[f"toa_{component}_radiance"]
         for component in (
