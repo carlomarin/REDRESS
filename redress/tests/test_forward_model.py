@@ -135,7 +135,11 @@ class _CoupledAtmosphere:
         )
 
 
-def _uniform_geometry(local_incidence_degree, shape=(9, 9)):
+def _uniform_geometry(
+    local_incidence_degree,
+    shape=(9, 9),
+    sky_view_factor=1.0,
+):
     global_sza = np.deg2rad(45.0)
     local_incidence = np.deg2rad(local_incidence_degree)
     zeros = np.zeros(shape, dtype=np.float64)
@@ -149,15 +153,19 @@ def _uniform_geometry(local_incidence_degree, shape=(9, 9)):
         "altitude": (("x", "y"), zeros.copy()),
         "eff_sza": (("x", "y"), np.full(shape, local_incidence)),
         "eff_vza": (("x", "y"), zeros.copy()),
-        "vt": (("x", "y"), np.ones(shape)),
+        "vt": (("x", "y"), np.full(shape, sky_view_factor)),
         "ct": (("x", "y"), zeros.copy()),
         "all_shadows": (("x", "y"), np.ones(shape)),
     })
     return angles, topography
 
 
-def test_surface_atmosphere_coupling_illuminates_observed_pixel():
-    angles, topography = _uniform_geometry(45.0)
+@pytest.mark.parametrize("sky_view_factor", (1.0, 0.35))
+def test_surface_atmosphere_coupling_is_sky_view_masked(sky_view_factor):
+    # Keep ct at zero to isolate the sky mask from terrain reillumination.
+    angles, topography = _uniform_geometry(
+        45.0, sky_view_factor=sky_view_factor
+    )
     shape = topography["altitude"].shape
     components = {}
 
@@ -193,7 +201,9 @@ def test_surface_atmosphere_coupling_illuminates_observed_pixel():
     direct_flat = 1000.0 * np.cos(np.deg2rad(45.0)) * 0.8
     total_flat = direct_flat + 100.0
     coupling = total_flat * (0.5 * 0.2) / (1 - 0.5 * 0.2)
-    expected_radiance_increment = 0.5 / np.pi * coupling * 0.8
+    expected_radiance_increment = (
+        0.5 / np.pi * coupling * sky_view_factor * 0.8
+    )
     actual_radiance_increment = (
         components[4]["diffuse_surface"][4, 4]
         - components[3]["diffuse_surface"][4, 4]

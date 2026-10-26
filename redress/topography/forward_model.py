@@ -444,10 +444,10 @@ def iterative_radiance(
 
             EtGP = 0
 
-        # Equation 9 of Lamare et al. (2020): atmospheric diffuse irradiance,
-        # terrain-reflected irradiance and surface-atmosphere coupling all
-        # illuminate the observed pixel.
-        EhP = EhP_flat * vd + EtGP + coupled_irradiance
+        # The coupled downwelling field reaches the pixel through the visible
+        # sky and is therefore masked like atmospheric diffuse irradiance.
+        # This extends Eq. 9 of Lamare et al. (2020), where EtGAP is unmasked.
+        EhP = (EhP_flat + coupled_irradiance) * vd + EtGP
 
         # If considering the neighbouring slopes contributions directly to
         # the satellite signal, "l_dif_dir" and "l_dif_ref_coupl_dif"
