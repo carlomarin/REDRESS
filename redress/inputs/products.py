@@ -54,7 +54,7 @@ class Dem(object):
         self.pixel_size = None
         self.angles = xr.Dataset()
 
-    def compute_horizon(self, N=32):
+    def compute_horizon(self, N=32, spatial_filter_size=None):
         """Compute horizon elevation and distance.
 
         The algorithm, based on Dozier et al. (1981) calculates the elevation
@@ -70,59 +70,111 @@ class Dem(object):
 
         """
 
+        if not isinstance(N, int) or N < 2:
+            raise ValueError("N must be an integer greater than or equal to 2")
+
         # Test if the pixels are square
-        if not abs(self.pixel_size[0]) == abs(self.pixel_size[1]):
+        if not np.isclose(
+            abs(self.pixel_size[0]), abs(self.pixel_size[1]), rtol=1e-6
+        ):
             raise RuntimeError("Error: Horizon algorithm only works with"
                                " square pixels!")
 
         if "altitude" not in self.bands:
             raise ValueError("DEM dataset must contain an 'altitude' variable")
 
-        # Use a temporary filled array because the horizon implementation does
-        # not accept NaNs. Keep the original DEM unchanged.
-        altitude = self.bands["altitude"].fillna(0)
+        altitude = np.asarray(
+            self.bands["altitude"].data, dtype=np.float64
+        )
+        if not np.all(np.isfinite(altitude)):
+            missing = np.count_nonzero(~np.isfinite(altitude))
+            raise ValueError(
+                f"DEM contains {missing} missing elevation cells. Fill the "
+                "buffered DEM before horizon calculation; replacing missing "
+                "terrain with zero creates false horizons."
+            )
 
         # Pre-allocate elevation and distance rasters. These rasters will
         # contain the angle in degrees to the horizon and the distance in
         # meters for each pixel. Each slice in the 3rd dimension represents
         # a direction.
-        eh = np.full((2 * N, altitude.data.shape[0],
-                      altitude.data.shape[1]), np.nan,
+        eh = np.full((2 * N, altitude.shape[0],
+                      altitude.shape[1]), np.nan,
                      dtype=np.float32,
                      )
-        dh = np.full((2 * N, altitude.data.shape[0],
-                      altitude.data.shape[1]), np.nan,
+        dh = np.full((2 * N, altitude.shape[0],
+                      altitude.shape[1]), np.nan,
                      dtype=np.float32,
                      )
 
         # Run the horizon algorithm for each direction
         for ii in range(1, N + 1, 1):
             phi = (ii - 1) * np.pi / N
-            ehtemp, dhtemp = dozier_horizon(altitude.data,
+            ehtemp, dhtemp = dozier_horizon(altitude,
                                             abs(self.pixel_size[0]), phi)
             dh[ii - 1, :, :] = dhtemp[0, :, :]
             eh[ii - 1, :, :] = ehtemp[0, :, :]
             dh[ii - 1 + N, :, :] = dhtemp[1, :, :]
             eh[ii - 1 + N, :, :] = ehtemp[1, :, :]
 
-        # Remove the noise in the products by applying a light median filter
-        eh = median_filter(eh, 3)
-        dh = median_filter(dh, 3)
+        if spatial_filter_size is not None:
+            if (
+                not isinstance(spatial_filter_size, int)
+                or spatial_filter_size < 1
+                or spatial_filter_size % 2 == 0
+            ):
+                raise ValueError(
+                    "spatial_filter_size must be a positive odd integer"
+                )
+            filter_shape = (1, spatial_filter_size, spatial_filter_size)
+            eh = median_filter(eh, size=filter_shape)
+            dh = median_filter(dh, size=filter_shape)
 
         # Convert numpy arrays to xarray
-        self.bands["horizon_ele"] = xr.DataArray(eh,
-                                                 dims=['phi', 'x', 'y'])
-        self.bands["horizon_dist"] = xr.DataArray(dh,
-                                                  dims=['phi', 'x', 'y'])
+        horizon_azimuth = np.mod(
+            np.pi - np.arange(2 * N) * np.pi / N,
+            2.0 * np.pi,
+        )
+        self.bands["horizon_ele"] = xr.DataArray(
+            eh,
+            dims=['phi', 'x', 'y'],
+            coords={"phi": horizon_azimuth},
+            attrs={"units": "degree", "long_name": "terrain horizon elevation"},
+        )
+        self.bands["horizon_dist"] = xr.DataArray(
+            dh,
+            dims=['phi', 'x', 'y'],
+            coords={"phi": horizon_azimuth},
+            attrs={"units": "m", "long_name": "distance to terrain horizon"},
+        )
+        self.bands.coords["phi"].attrs.update(
+            units="radian",
+            long_name="terrain horizon compass azimuth",
+        )
 
-    def compute_topo_bands(self):
+    def compute_topo_bands(
+        self,
+        self_shadow_cosine_threshold=0.0,
+        clean_cast_shadows=False,
+        terrain_configuration_method="dozier_frew",
+    ):
         """Calculate all topographic products from DEM
 
         Calculates all the topographic products based on the input DEM and the
         derived products.
 
-        Args:
-            self """
+        Parameters
+        ----------
+        self_shadow_cosine_threshold : float
+            Minimum cosine of local solar incidence considered illuminated.
+            The physical default is zero. The original REDRESS empirical
+            value can be reproduced with 0.035.
+        clean_cast_shadows : bool
+            Apply a 3 by 3 binary closing operation to cast visibility.
+            Disabled by default because this changes the physical mask.
+        terrain_configuration_method : {"dozier_frew", "redress_bowl"}
+            Definition used for the terrain configuration factor.
+        """
 
         # Temporarily store products in a dictionnary
         topo_prods = {}
@@ -148,12 +200,25 @@ class Dem(object):
         topo_prods["eff_vza"] = dem_products.effective_zenith_angle(
             self.angles["VZA"], self.angles["VAA"],
             topo_prods["slope"], topo_prods["aspect"])
+        topo_prods["local_relative_azimuth"] = (
+            dem_products.local_relative_azimuth(
+                self.angles["SZA"].data,
+                self.angles["SAA"].data,
+                self.angles["VZA"].data,
+                self.angles["VAA"].data,
+                topo_prods["slope"],
+                topo_prods["aspect"],
+            )
+        )
 
         # Compute skyview and terrain configuration factors
         print("Calculating Skyview Factor\n")
         topo_prods["vt"], topo_prods["ct"] = dem_products.skyview(
             self.bands["horizon_ele"].data,
-            topo_prods["slope"], topo_prods["aspect"])
+            topo_prods["slope"],
+            topo_prods["aspect"],
+            terrain_configuration_method=terrain_configuration_method,
+        )
 
         # Calculate shadow product
         print("Calculating pixels based shadows\n")
@@ -163,16 +228,52 @@ class Dem(object):
                 topo_prods["slope"], topo_prods["aspect"],
                 self.angles["SZA"].data,
                 topo_prods["eff_sza"],
-                self.angles["SAA"].data)
+                self.angles["SAA"].data,
+                min_cosine=self_shadow_cosine_threshold,
+                clean_cast_shadows=clean_cast_shadows,
+            )
+        topo_prods["beam_visibility"] = topo_prods["all_shadows"]
 
-        # Pad the bands with zeros around the edges to remove the aberrant
-        # values, then save the array to the Dataset
+        # A pixel must face the sensor and lie above the terrain horizon in
+        # the viewing direction. This is the binary function 8 in the paper.
+        topo_prods["view_ground"] = dem_products.terrain_visibility(
+            self.bands["horizon_ele"].data,
+            self.angles["VZA"].data,
+            self.angles["VAA"].data,
+            topo_prods["eff_vza"],
+            min_cosine=0.0,
+        )
+
+        # The 3-by-3 slope stencil is undefined at the outermost DEM cells.
+        # Preserve these cells as missing rather than assigning physical zero.
+        spatial_coords = {
+            name: coordinate
+            for name, coordinate in self.bands.coords.items()
+            if set(coordinate.dims).issubset({"x", "y"})
+        }
         for key, value in topo_prods.items():
             padded_value = np.pad(value[1:-1, 1:-1], ((1, 1), (1, 1)),
-                                  mode="constant")
+                                  mode="constant", constant_values=np.nan)
             self.bands[key] = xr.DataArray(padded_value,
                                            dims=['x', 'y'],
-                                           coords=self.bands.coords)
+                                           coords=spatial_coords)
+
+        units = {
+            "slope": "radian",
+            "aspect": "radian",
+            "eff_sza": "radian",
+            "eff_vza": "radian",
+            "local_relative_azimuth": "radian",
+            "vt": "1",
+            "ct": "1",
+            "all_shadows": "1",
+            "self_shadows": "1",
+            "cast_shadows": "1",
+            "beam_visibility": "1",
+            "view_ground": "1",
+        }
+        for name, unit in units.items():
+            self.bands[name].attrs["units"] = unit
 
         print("Done\n")
 
@@ -422,6 +523,10 @@ class Model(object):
         band_definitions = self.meta.get("band_definitions")
         if band_definitions is None:
             band_definitions = [None] * len(self.meta["wavelengths"])
+        relative_azimuth = self.topo_bands.get(
+            "local_relative_azimuth",
+            self.angles["SAA"] - self.angles["VAA"],
+        )
 
         # Calculate BRF for the local geometry, wavelength and snow SSA.
         for wvl, band_definition in zip(self.meta["wavelengths"],
@@ -430,7 +535,7 @@ class Model(object):
                 band_brf = snow.brf_kokhanovsky(
                     self.topo_bands["eff_sza"],
                     self.topo_bands["eff_vza"],
-                    self.angles["SAA"] - self.angles["VAA"],
+                    relative_azimuth,
                     wvl,
                     self.ssa,
                     impurities=self.snow_impurities,
@@ -440,7 +545,7 @@ class Model(object):
                     snow.brf_kokhanovsky(
                         self.topo_bands["eff_sza"],
                         self.topo_bands["eff_vza"],
-                        self.angles["SAA"] - self.angles["VAA"],
+                        relative_azimuth,
                         spectral_wavelength,
                         self.ssa,
                         impurities=self.snow_impurities,

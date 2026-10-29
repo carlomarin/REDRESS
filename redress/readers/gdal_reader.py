@@ -9,8 +9,7 @@ M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 from osgeo import gdal
 import xarray as xr
 import numpy as np
-from pyproj import Proj, transform
-from redress.geospatial import gdal_ops
+from pyproj import CRS, Transformer
 from redress.inputs.products import Dem
 
 gdal.UseExceptions()
@@ -27,15 +26,12 @@ def open_product(inpath):
     :rtype: tuple (osgeo.gdal.Dataset, tuple)
     """
     try:
-        # Open the product
-        prod = gdal.Open(str(inpath))
-
-    except RuntimeError as err:
-        print("Error: GDAL cannot read specified file! %s" % err)
-
-    # Extract information from the product (overwrite)
-    product = prod
-    geotransform = prod.GetGeoTransform()
+        product = gdal.Open(str(inpath), gdal.GA_ReadOnly)
+    except RuntimeError as error:
+        raise OSError(f"GDAL cannot read {inpath}: {error}") from error
+    if product is None:
+        raise OSError(f"GDAL cannot read {inpath}")
+    geotransform = product.GetGeoTransform()
 
     return (product, geotransform)
 
@@ -76,7 +72,7 @@ def image_extents(product, geotransform, step=1):
     return ext
 
 
-def reproject(product, epsg):
+def reproject(product, epsg, resolution=None):
     """Reproject a product.
 
     Reprojects a Gdal product in memory based on a given EPSG code. The
@@ -85,13 +81,31 @@ def reproject(product, epsg):
     :param epsg: the epsg code to reproject the product to
     :type epsg: int
     """
-    reprojected = gdal.Warp('/vsimem/reproj.tif', product,
-                            dstSRS='EPSG:%s' % epsg, dstNodata=-9999)
+    options = {
+        "dstSRS": f"EPSG:{epsg}",
+        "dstNodata": np.nan,
+        "outputType": gdal.GDT_Float32,
+        "resampleAlg": gdal.GRA_Bilinear,
+        "format": "MEM",
+    }
+    if resolution is not None:
+        if not np.isfinite(resolution) or resolution <= 0:
+            raise ValueError("resolution must be finite and greater than zero")
+        options.update(xRes=resolution, yRes=resolution)
+    reprojected = gdal.Warp('', product, **options)
+    if reprojected is None:
+        raise RuntimeError(f"GDAL failed to reproject the DEM to EPSG:{epsg}")
 
     return (reprojected, reprojected.GetGeoTransform())
 
 
-def clip(product, geo_extent, native_epsg=4326, epsg=4326):
+def clip(
+    product,
+    geo_extent,
+    native_epsg=4326,
+    epsg=4326,
+    buffer_distance=0.0,
+):
     """Clip a product.
 
     Clips a Gdal product in memory to a given extent. The
@@ -102,21 +116,31 @@ def clip(product, geo_extent, native_epsg=4326, epsg=4326):
     :param epsg: the epsg code of the extent
     :type epsg: int
     """
-    # Build the projection data
-    prj_in = Proj('epsg:%s' % native_epsg)
-    prj_out = Proj('epsg:%s' % epsg)
-
     # Get max min coords of the shape
     minX, maxX, minY, maxY = geo_extent.GetEnvelope()
+    transformer = Transformer.from_crs(
+        CRS.from_epsg(native_epsg),
+        CRS.from_epsg(epsg),
+        always_xy=True,
+    )
+    corners = (
+        (minX, minY), (minX, maxY), (maxX, minY), (maxX, maxY),
+    )
+    transformed = [transformer.transform(x, y) for x, y in corners]
+    x_coordinates, y_coordinates = zip(*transformed)
+    xmin = min(x_coordinates) - buffer_distance
+    xmax = max(x_coordinates) + buffer_distance
+    ymin = min(y_coordinates) - buffer_distance
+    ymax = max(y_coordinates) + buffer_distance
 
-    # Product extent
-    xmin, ymin = transform(prj_in, prj_out, minY, minX)
-    xmax, ymax = transform(prj_in, prj_out, maxY, maxX)
-
-    bbox = [xmin, ymax, xmax, ymin]
-
-    clipped = gdal.Translate('/vsimem/clip.tif', product,
-                             projWin=bbox)
+    clipped = gdal.Translate(
+        '',
+        product,
+        format="MEM",
+        projWin=[xmin, ymax, xmax, ymin],
+    )
+    if clipped is None:
+        raise RuntimeError("GDAL failed to clip the DEM to the requested extent")
 
     return (clipped, clipped.GetGeoTransform())
 
@@ -132,11 +156,20 @@ def extract_band(product, geotransform):
     """
     try:
         currentband = product.GetRasterBand(1)  # Open band
-    except ValueError as err:
-        print("Error importing the raster band. %s" % err)
+    except (RuntimeError, ValueError) as error:
+        raise OSError("GDAL cannot read the first DEM band") from error
 
     # Extract band array
-    arr = currentband.ReadAsArray()
+    arr = currentband.ReadAsArray().astype(np.float64)
+    nodata = currentband.GetNoDataValue()
+    if nodata is not None:
+        arr[np.isclose(arr, nodata, equal_nan=True)] = np.nan
+    scale = currentband.GetScale()
+    offset = currentband.GetOffset()
+    if scale is not None:
+        arr *= scale
+    if offset is not None:
+        arr += offset
     band = xr.DataArray(arr, dims=['x', 'y'])
 
     # Calculate longitude array
@@ -157,8 +190,22 @@ def extract_band(product, geotransform):
     return band
 
 
-def dem_generic(inpath, extent, epsg,):
-    """doc."""
+def dem_generic(
+    inpath,
+    extent,
+    epsg,
+    resolution=None,
+    horizon_buffer_m=0.0,
+    extent_epsg=4326,
+):
+    """Read, project and clip a DEM for REDRESS terrain calculations.
+
+    ``epsg`` must identify a projected CRS with metre horizontal units.
+    ``extent_epsg`` identifies the coordinate reference system of ``extent``.
+    The optional horizon buffer retains terrain outside the satellite
+    footprint; it should be at least as large as the intended horizon search
+    distance.
+    """
     # Instantiate DEM class
     dem = Dem()
 
@@ -168,20 +215,37 @@ def dem_generic(inpath, extent, epsg,):
     # Open the image using the imported reader
     raw_product, raw_geotrans = open_product(inpath)
 
-    # Check if the product overlaps the extent of the file
-    dem_extents = gdal_ops.build_poly_from_coords(image_extents(raw_product,
-                                                                raw_geotrans))
+    if epsg is None:
+        raise ValueError(
+            "A projected metric EPSG code is required for DEM processing"
+        )
+    target_crs = CRS.from_epsg(epsg)
+    if not target_crs.is_projected:
+        raise ValueError("DEM target CRS must be projected")
+    unit_names = {
+        axis.unit_name.lower() for axis in target_crs.axis_info
+        if axis.unit_name is not None
+    }
+    if not unit_names.intersection({"metre", "meter"}):
+        raise ValueError("DEM target CRS horizontal units must be metres")
+    if not np.isfinite(horizon_buffer_m) or horizon_buffer_m < 0:
+        raise ValueError("horizon_buffer_m must be finite and non-negative")
 
-    if not gdal_ops.geom_contains(dem_extents, extent):
-        raise ValueError("The chosen bounding box is not entirely inside the"
-                         " provided DEM!")
-
-    # Reproject the DEM to the desire dprojection
-    reprojected_product, reprojected_geotrans = reproject(raw_product, 2154)
+    # Reproject into a local metric CRS before calculating terrain gradients.
+    reprojected_product, reprojected_geotrans = reproject(
+        raw_product, epsg, resolution=resolution
+    )
 
     # Subset the DEM to an area of interest
-    clipped_product, clipped_geotrans = clip(reprojected_product, extent,
-                                             epsg=2154)
+    clipped_product, clipped_geotrans = clip(
+        reprojected_product,
+        extent,
+        native_epsg=extent_epsg,
+        epsg=epsg,
+        buffer_distance=horizon_buffer_m,
+    )
+    if clipped_product.RasterXSize == 0 or clipped_product.RasterYSize == 0:
+        raise ValueError("The requested extent does not overlap the DEM")
 
     # Import the band and geotransform
     dem.bands["altitude"] = extract_band(clipped_product, clipped_geotrans)

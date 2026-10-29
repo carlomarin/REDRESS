@@ -251,17 +251,22 @@ def iterative_radiance(
     cos_vza = np.cos(angles["VZA"].data)
     cos_vza_eff = np.cos(topo_bands["eff_vza"].data)
 
-    # Calculate the pixels viewed by the satellite (not hidden)
-    view_ground = np.where(cos_vza_eff <= 0, 0, cos_vza_eff)
-    # Set - values to 0
-    view_ground = np.where(view_ground > 0, 1, view_ground)  # >0 = 1
+    # Use the DEM horizon line-of-sight product when available. Synthetic
+    # scenes without a horizon retain the local front-facing approximation.
+    if "view_ground" in topo_bands:
+        view_ground = topo_bands["view_ground"].data
+    else:
+        view_ground = (cos_vza_eff > 0).astype(np.float64)
 
     # Use convolution to obtain the mean terrain configuration factor
     ct_nbh = _window_mean(
         topo_bands["ct"].data, tw, boundary="constant"
     )
     # Shadows, in this product bb = 0 if a shadow, 1 if no shadow
-    bb = topo_bands["all_shadows"]
+    if "beam_visibility" in topo_bands:
+        bb = topo_bands["beam_visibility"]
+    else:
+        bb = topo_bands["all_shadows"]
 
     # Shadows in the neighborhood
     bb_nbh = _window_mean(bb, tw, boundary="constant")

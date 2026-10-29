@@ -6,7 +6,15 @@ Unittests for the topography module
 from pytest import approx
 import numpy as np
 import xarray as xr
-from redress.topography.dem_products import horneslope
+from redress.topography.dem_products import (
+    effective_zenith_angle,
+    horizon_elevation_at_azimuth,
+    horneslope,
+    local_relative_azimuth,
+    skyview,
+    subpixel_visibility_fraction,
+    terrain_visibility,
+)
 from redress.inputs.products import Dem
 
 
@@ -29,6 +37,100 @@ class Test_dem_prods(object):
         assert slope[2, -2] == approx(np.deg2rad(45))
         assert aspect[2, 2] == approx(np.deg2rad(270))
         assert aspect[2, -2] == approx(np.deg2rad(90))
+
+    def test_effective_angle_uses_local_surface_normal(self):
+        zenith = np.asarray([[np.deg2rad(45.0)]])
+        south = np.asarray([[np.deg2rad(180.0)]])
+        slope = np.asarray([[np.deg2rad(20.0)]])
+
+        incidence = effective_zenith_angle(zenith, south, slope, south)
+
+        assert incidence[0, 0] == approx(np.deg2rad(25.0))
+
+    def test_local_relative_azimuth_matches_flat_surface_geometry(self):
+        shape = (1, 1)
+        relative = local_relative_azimuth(
+            np.full(shape, np.deg2rad(40.0)),
+            np.full(shape, np.deg2rad(30.0)),
+            np.full(shape, np.deg2rad(10.0)),
+            np.full(shape, np.deg2rad(110.0)),
+            np.zeros(shape),
+            np.zeros(shape),
+        )
+
+        assert relative[0, 0] == approx(np.deg2rad(80.0))
+
+    def test_skyview_uses_radian_slope_and_aspect(self):
+        horizon = np.zeros((64, 1, 1))
+        slope = np.asarray([[np.deg2rad(45.0)]])
+        aspect = np.zeros((1, 1))
+
+        visible_sky, terrain = skyview(horizon, slope, aspect)
+
+        assert visible_sky[0, 0] == approx(np.cos(np.deg2rad(45.0)))
+        assert terrain[0, 0] == approx(
+            (1.0 + np.cos(np.deg2rad(45.0))) / 2.0
+            - visible_sky[0, 0]
+        )
+
+        _, bowl_terrain = skyview(
+            horizon,
+            slope,
+            aspect,
+            terrain_configuration_method="redress_bowl",
+        )
+        assert bowl_terrain[0, 0] == approx(1.0 - visible_sky[0, 0])
+
+    def test_horizontal_skyview_matches_horizon_elevation(self):
+        horizon = np.full((64, 1, 1), 30.0)
+
+        visible_sky, _ = skyview(
+            horizon,
+            np.zeros((1, 1)),
+            np.zeros((1, 1)),
+        )
+
+        assert visible_sky[0, 0] == approx(np.cos(np.deg2rad(30.0)) ** 2)
+
+    def test_horizon_interpolation_and_terrain_visibility(self):
+        horizon = np.zeros((8, 1, 1))
+        horizon[4, 0, 0] = 30.0  # North in the REDRESS horizon ordering.
+        north = np.zeros((1, 1))
+        south = np.full((1, 1), np.pi)
+
+        assert horizon_elevation_at_azimuth(
+            horizon, north
+        )[0, 0] == approx(30.0)
+        assert horizon_elevation_at_azimuth(
+            horizon, south
+        )[0, 0] == approx(0.0)
+
+        north_visibility = terrain_visibility(
+            horizon,
+            np.full((1, 1), np.deg2rad(70.0)),
+            north,
+            np.full((1, 1), np.deg2rad(70.0)),
+        )
+        south_visibility = terrain_visibility(
+            horizon,
+            np.full((1, 1), np.deg2rad(70.0)),
+            south,
+            np.full((1, 1), np.deg2rad(70.0)),
+        )
+        assert north_visibility[0, 0] == 0.0
+        assert south_visibility[0, 0] == 1.0
+
+    def test_subpixel_visibility_is_an_area_fraction(self):
+        visibility = np.asarray([
+            [1.0, 1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0, 0.0],
+        ])
+
+        fraction = subpixel_visibility_fraction(visibility, 2)
+
+        assert fraction == approx(np.asarray([[0.75, 0.0], [1.0, 0.75]]))
 
 
 class Test_horizons(object):

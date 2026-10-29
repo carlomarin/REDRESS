@@ -43,10 +43,9 @@ class Sentinel2EndmemberScenario:
     def validate(self, enforce_view_factor_closure: bool = True) -> None:
         """Validate physical ranges needed by REDRESS and Py6S.
 
-        REDRESS computes the terrain configuration factor from a DEM as
-        ``ct = 1 - vt``. Synthetic scenarios follow the same bowl closure by
-        default. Closure can be disabled explicitly when the two factors are
-        varied independently in a controlled sensitivity experiment.
+        Synthetic scenarios follow the REDRESS bowl closure ``ct = 1 - vt``
+        by default. Production DEM processing uses the Dozier--Frew geometric
+        configuration factor unless the legacy bowl method is requested.
         """
 
         if not self.name.strip():

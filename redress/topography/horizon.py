@@ -15,7 +15,7 @@ The algorithm is based on Dozier et al. 1980, 1990. The python implementation
  of the MATLAB code in MODimLAB (Sirguey et al. 2009) was applied here.
 NB: Numba is used to speed up the process.
 """
-from math import pi, cos, sin, sqrt, atan, degrees, radians
+from math import pi, cos, sin, sqrt, atan, degrees
 import numpy as np
 from numba import njit
 
@@ -261,10 +261,7 @@ def dozier_horizon(dem_array, dem_pixel_size, phi):
                     dx ** 2 + dy ** 2
                 )
                 Eh[0][int(y + M1), int(x + N1)] = degrees(
-                    atan(
-                        (radians(A[Hf[j]]) - radians(A[j]))
-                        / (radians(D[Hf[j]]) - radians(D[j]))
-                    )
+                    atan((A[Hf[j]] - A[j]) / (D[Hf[j]] - D[j]))
                 )
             if D[j] - D[Hb[j]] == 0:
                 Dh[1][int(y + M1), int(x + N1)] = D[j] - D[0] + sqrt(
@@ -276,10 +273,7 @@ def dozier_horizon(dem_array, dem_pixel_size, phi):
                     dx ** 2 + dy ** 2
                 )
                 Eh[1][int(y + M1), int(x + N1)] = degrees(
-                    atan(
-                        (radians(A[Hb[j]]) - radians(A[j]))
-                        / (radians(D[j]) - radians(D[Hb[j]]))
-                    )
+                    atan((A[Hb[j]] - A[j]) / (D[j] - D[Hb[j]]))
                 )
     return Eh, Dh
 
