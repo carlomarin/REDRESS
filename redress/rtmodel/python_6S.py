@@ -4,8 +4,48 @@
 This file is part of the complex_terrain algorithm
 M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 """
+from collections.abc import Mapping
+
 import numpy as np
 import Py6S as ps
+
+
+def _aerosol_profile(aerosol):
+    """Build a predefined or four-component Py6S aerosol profile."""
+
+    predefined = {
+        "Continental": ps.AeroProfile.Continental,
+        "BiomassBurning": ps.AeroProfile.BiomassBurning,
+        "Desert": ps.AeroProfile.Desert,
+        "Maritime": ps.AeroProfile.Maritime,
+        "Stratospheric": ps.AeroProfile.Stratospheric,
+        "Urban": ps.AeroProfile.Urban,
+        "None": ps.AeroProfile.NoAerosols,
+    }
+    if isinstance(aerosol, str):
+        try:
+            return ps.AeroProfile.PredefinedType(predefined[aerosol])
+        except KeyError as error:
+            valid = ", ".join(predefined)
+            raise ValueError(
+                f"Unknown aerosol profile {aerosol!r}. Valid profiles: {valid}."
+            ) from error
+
+    if isinstance(aerosol, Mapping):
+        components = {name: float(value) for name, value in aerosol.items()}
+        valid_components = {"dust", "water", "oceanic", "soot"}
+        unexpected = set(components).difference(valid_components)
+        if unexpected:
+            raise ValueError(
+                "Unknown aerosol components: " + ", ".join(sorted(unexpected))
+            )
+        if not np.isclose(sum(components.values()), 1.0, atol=1e-8):
+            raise ValueError("aerosol component fractions must sum to one")
+        if any(value < 0.0 for value in components.values()):
+            raise ValueError("aerosol component fractions cannot be negative")
+        return ps.AeroProfile.User(**components)
+
+    raise TypeError("aero must be a profile name or component mapping")
 
 
 class rtmodel(object):
@@ -26,17 +66,6 @@ class rtmodel(object):
         """
 
         alt_km = alt / 1000
-
-        # Build aero profiles
-        aero_profiles = {
-            "Continental": ps.AeroProfile.Continental,
-            "BiomassBurning": ps.AeroProfile.BiomassBurning,
-            "Desert": ps.AeroProfile.Desert,
-            "Maritime": ps.AeroProfile.Maritime,
-            "Stratospheric": ps.AeroProfile.Stratospheric,
-            "Urban": ps.AeroProfile.Urban,
-            "None": ps.AeroProfile.NoAerosols,
-        }
 
         # Generate a 6S class
         s = ps.SixS()
@@ -94,7 +123,7 @@ class rtmodel(object):
                 atmo_profiles[atmo])
 
         # Aerosol parameters
-        s.aero_profile = ps.AeroProfile.PredefinedType(aero_profiles[aero])
+        s.aero_profile = _aerosol_profile(aero)
 
         s.aot550 = aod
 
