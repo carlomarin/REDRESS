@@ -210,6 +210,11 @@ class Dem(object):
                 topo_prods["aspect"],
             )
         )
+        topo_prods["local_art_relative_azimuth"] = (
+            dem_products.art_relative_azimuth(
+                topo_prods["local_relative_azimuth"]
+            )
+        )
 
         # Compute skyview and terrain configuration factors
         print("Calculating Skyview Factor\n")
@@ -264,6 +269,7 @@ class Dem(object):
             "eff_sza": "radian",
             "eff_vza": "radian",
             "local_relative_azimuth": "radian",
+            "local_art_relative_azimuth": "radian",
             "vt": "1",
             "ct": "1",
             "all_shadows": "1",
@@ -274,6 +280,14 @@ class Dem(object):
         }
         for name, unit in units.items():
             self.bands[name].attrs["units"] = unit
+        self.bands["local_relative_azimuth"].attrs["long_name"] = (
+            "geometric local solar-view azimuth separation; zero is equal "
+            "azimuth"
+        )
+        self.bands["local_art_relative_azimuth"].attrs["long_name"] = (
+            "local ART relative azimuth; zero is forward scattering and pi "
+            "is backscatter"
+        )
 
         print("Done\n")
 
@@ -523,10 +537,18 @@ class Model(object):
         band_definitions = self.meta.get("band_definitions")
         if band_definitions is None:
             band_definitions = [None] * len(self.meta["wavelengths"])
-        relative_azimuth = self.topo_bands.get(
-            "local_relative_azimuth",
-            self.angles["SAA"] - self.angles["VAA"],
-        )
+        if "local_art_relative_azimuth" in self.topo_bands:
+            relative_azimuth = self.topo_bands[
+                "local_art_relative_azimuth"
+            ]
+        else:
+            geometric_relative_azimuth = self.topo_bands.get(
+                "local_relative_azimuth",
+                self.angles["SAA"] - self.angles["VAA"],
+            )
+            relative_azimuth = dem_products.art_relative_azimuth(
+                geometric_relative_azimuth
+            )
 
         # Calculate BRF for the local geometry, wavelength and snow SSA.
         for wvl, band_definition in zip(self.meta["wavelengths"],

@@ -207,7 +207,8 @@ def brf_kokhanovsky(
     :type theta_i: float
     :param theta_v: viewing zenith angle
     :type theta_v: float
-    :param phi: relative azimuth angle (illumination - viewing)
+    :param phi: ART relative azimuth angle: zero on the forward-scattering
+        side and pi in exact backscatter
     :type phi: float
     :param wvl: wavelength (m)
     :type wvl: ndarray
@@ -233,7 +234,8 @@ def brf_kokhanovsky(
         :type theta_i: float
         :param theta_v: viewing zenith angle
         :type theta_v: float
-        :param phi: relative azimuth angle (illumination - viewing)
+        :param phi: ART relative azimuth angle: zero on the
+            forward-scattering side and pi in exact backscatter
         :type phi: float
         :return: r0
         :rtype: float

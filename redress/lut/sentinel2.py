@@ -233,7 +233,8 @@ def create_sentinel2_snow_brf_lut(
     view_zenith_angle
         Sensor viewing zenith angles in degrees.
     relative_azimuth_angle
-        Solar-minus-view azimuth angles in degrees.
+        Unsigned geometric solar-view azimuth separation in degrees. Zero
+        means equal solar and viewing azimuths (the backscattering side).
 
     Returns
     -------
@@ -324,6 +325,9 @@ def create_sentinel2_snow_brf_lut(
         "relative_azimuth_angle",
     ):
         dataset[coordinate_name].attrs["units"] = "degree"
+    dataset["relative_azimuth_angle"].attrs["long_name"] = (
+        "geometric solar-view relative azimuth; zero is equal azimuth"
+    )
     dataset["wavelength_nm"].attrs.update(
         long_name="response-weighted effective wavelength",
         units="nm",
@@ -589,6 +593,9 @@ def create_sentinel2_toa_lut(
     }
     for coordinate_name, units in coordinate_units.items():
         dataset[coordinate_name].attrs["units"] = units
+    dataset["relative_azimuth_angle"].attrs["long_name"] = (
+        "geometric solar-view relative azimuth; zero is equal azimuth"
+    )
     dataset["black_carbon_ng_g"].attrs["long_name"] = \
         "black-carbon mass concentration in snow"
     dataset["dust_ug_g"].attrs["long_name"] = \

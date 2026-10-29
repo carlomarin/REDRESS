@@ -64,6 +64,7 @@ def test_model_integrates_snow_optics_over_sentinel2_response(monkeypatch):
     received_impurities = []
     incidence_angles = []
     viewing_angles = []
+    relative_azimuth_angles = []
 
     def fake_albedo(wavelength_nm, sza, diffuse_ratio, ssa, **kwargs):
         received_impurities.append(kwargs["impurities"])
@@ -82,6 +83,7 @@ def test_model_integrates_snow_optics_over_sentinel2_response(monkeypatch):
 
     def fake_brf(theta_i, theta_v, phi, wavelength_nm, ssa, **kwargs):
         received_impurities.append(kwargs["impurities"])
+        relative_azimuth_angles.append(np.asarray(phi))
         return np.full(shape, wavelength_nm)
 
     monkeypatch.setattr(
@@ -138,3 +140,7 @@ def test_model_integrates_snow_optics_over_sentinel2_response(monkeypatch):
         np.testing.assert_allclose(angle, np.deg2rad(30.0))
     for angle in viewing_angles:
         np.testing.assert_allclose(angle, np.deg2rad(10.0))
+    for angle in relative_azimuth_angles:
+        # Equal global sun and sensor azimuths are the backscattering side,
+        # represented by pi in the ART convention.
+        np.testing.assert_allclose(angle, np.pi)

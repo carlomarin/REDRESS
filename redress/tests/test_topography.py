@@ -7,6 +7,7 @@ from pytest import approx
 import numpy as np
 import xarray as xr
 from redress.topography.dem_products import (
+    art_relative_azimuth,
     effective_zenith_angle,
     horizon_elevation_at_azimuth,
     horneslope,
@@ -59,6 +60,13 @@ class Test_dem_prods(object):
         )
 
         assert relative[0, 0] == approx(np.deg2rad(80.0))
+
+    def test_art_relative_azimuth_reverses_scattering_convention(self):
+        geometric = np.deg2rad(np.asarray([0.0, 80.0, 180.0]))
+
+        art = art_relative_azimuth(geometric)
+
+        assert art == approx(np.deg2rad([180.0, 100.0, 0.0]))
 
     def test_skyview_uses_radian_slope_and_aspect(self):
         horizon = np.zeros((64, 1, 1))

@@ -345,39 +345,72 @@ def local_relative_azimuth(
     slp,
     asp,
 ):
-    """Return the unsigned relative azimuth in the local slope plane.
+    """Return the geometric relative azimuth in the local slope plane.
 
-    Sun and sensor vectors are projected onto the tangent plane. Only the
-    unsigned angle is needed by the reciprocal snow BRF used in REDRESS,
-    which depends on the cosine of relative azimuth.
+    The returned unsigned angle follows the common satellite convention:
+    zero means that the surface-to-sun and surface-to-sensor projections have
+    the same azimuth. The calculation uses the invariant angle between the
+    global direction vectors and their local zenith angles.
+
+    When either direction is normal to the local surface, relative azimuth is
+    undefined and is set to zero. It then has no effect on the ART scattering
+    angle because the corresponding sine-of-zenith term is zero.
     """
 
-    def direction(zenith, azimuth):
-        return np.stack((
-            np.sin(zenith) * np.sin(azimuth),
-            np.sin(zenith) * np.cos(azimuth),
-            np.cos(zenith),
-        ), axis=0)
+    illumination_zenith = np.asarray(
+        illumination_zenith, dtype=np.float64
+    )
+    illumination_azimuth = np.asarray(
+        illumination_azimuth, dtype=np.float64
+    )
+    viewing_zenith = np.asarray(viewing_zenith, dtype=np.float64)
+    viewing_azimuth = np.asarray(viewing_azimuth, dtype=np.float64)
 
-    normal = np.stack((
-        np.sin(slp) * np.sin(asp),
-        np.sin(slp) * np.cos(asp),
-        np.cos(slp),
-    ), axis=0)
-    illumination = direction(illumination_zenith, illumination_azimuth)
-    viewing = direction(viewing_zenith, viewing_azimuth)
-    cos_incidence = np.sum(illumination * normal, axis=0)
-    cos_view = np.sum(viewing * normal, axis=0)
-    illumination_tangent = illumination - cos_incidence * normal
-    viewing_tangent = viewing - cos_view * normal
-    illumination_norm = np.linalg.norm(illumination_tangent, axis=0)
-    viewing_norm = np.linalg.norm(viewing_tangent, axis=0)
-    denominator = illumination_norm * viewing_norm
-    cosine = np.divide(
-        np.sum(illumination_tangent * viewing_tangent, axis=0),
+    local_incidence = effective_zenith_angle(
+        illumination_zenith, illumination_azimuth, slp, asp
+    )
+    local_view_zenith = effective_zenith_angle(
+        viewing_zenith, viewing_azimuth, slp, asp
+    )
+    cosine_direction_angle = (
+        np.cos(illumination_zenith) * np.cos(viewing_zenith)
+        + np.sin(illumination_zenith) * np.sin(viewing_zenith)
+        * np.cos(illumination_azimuth - viewing_azimuth)
+    )
+    denominator = np.sin(local_incidence) * np.sin(local_view_zenith)
+    cosine_relative_azimuth = np.divide(
+        cosine_direction_angle
+        - np.cos(local_incidence) * np.cos(local_view_zenith),
         denominator,
         out=np.ones_like(denominator, dtype=np.float64),
-        where=denominator > 1e-12,
+        where=np.abs(denominator) > 1e-12,
     )
-    return np.arccos(np.clip(cosine, -1.0, 1.0))
+    relative_azimuth = np.arccos(
+        np.clip(cosine_relative_azimuth, -1.0, 1.0)
+    )
+    invalid = (
+        ~np.isfinite(illumination_zenith)
+        | ~np.isfinite(illumination_azimuth)
+        | ~np.isfinite(viewing_zenith)
+        | ~np.isfinite(viewing_azimuth)
+        | ~np.isfinite(local_incidence)
+        | ~np.isfinite(local_view_zenith)
+    )
+    return np.where(invalid, np.nan, relative_azimuth)
+
+
+def art_relative_azimuth(geometric_relative_azimuth):
+    """Convert geometric relative azimuth to the ART snow-BRF convention.
+
+    The geometric convention has zero for equal sun and sensor azimuths. In
+    the asymptotic radiative-transfer convention used by
+    :func:`redress.optics.snow.brf_kokhanovsky`, zero denotes the
+    forward-scattering side and pi denotes exact backscatter.
+    """
+
+    relative_azimuth = np.asarray(
+        geometric_relative_azimuth, dtype=np.float64
+    )
+    unsigned = np.arccos(np.clip(np.cos(relative_azimuth), -1.0, 1.0))
+    return np.pi - unsigned
 
