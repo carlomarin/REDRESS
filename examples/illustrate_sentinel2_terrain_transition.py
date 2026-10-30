@@ -181,7 +181,7 @@ def legend_label(terrain_case):
         f"{terrain_case.label}: "
         f"i={terrain_case.local_incidence_angle_deg:g}°, "
         f"v={terrain_case.local_view_zenith_angle_deg:g}°, "
-        f"raa={terrain_case.relative_azimuth_angle_deg:g}°, "
+        f"RAA_geom={terrain_case.relative_azimuth_angle_deg:g}°, "
         f"Vd={terrain_case.sky_view_factor:.2f}, "
         f"b={beam_visibility}"
     )
