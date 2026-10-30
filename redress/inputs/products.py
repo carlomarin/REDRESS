@@ -176,7 +176,7 @@ class Dem(object):
         self,
         self_shadow_cosine_threshold=0.0,
         clean_cast_shadows=False,
-        terrain_configuration_method="dozier_frew",
+        terrain_configuration_method="hemispheric_closure",
     ):
         """Calculate all topographic products from DEM
 
@@ -192,8 +192,11 @@ class Dem(object):
         clean_cast_shadows : bool
             Apply a 3 by 3 binary closing operation to cast visibility.
             Disabled by default because this changes the physical mask.
-        terrain_configuration_method : {"dozier_frew", "redress_bowl"}
-            Definition used for the terrain configuration factor.
+        terrain_configuration_method : {"hemispheric_closure",
+            "dozier_frew", "redress_bowl"}
+            Definition used for the terrain configuration factor. The default
+            closes the outward hemisphere with Ct = 1 - Vd. ``redress_bowl``
+            is a backward-compatible alias for the same convention.
         """
 
         # Temporarily store products in a dictionnary
@@ -300,6 +303,7 @@ class Dem(object):
         }
         for name, unit in units.items():
             self.bands[name].attrs["units"] = unit
+        self.bands["ct"].attrs["method"] = terrain_configuration_method
         self.bands["local_relative_azimuth"].attrs["long_name"] = (
             "geometric local solar-view azimuth separation; zero is equal "
             "azimuth"

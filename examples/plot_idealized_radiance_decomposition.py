@@ -35,6 +35,7 @@ OUTPUT_PDF = Path(
 
 BANDS = ("B03", "B08", "B11")
 OPPOSITE_WALL_SNOW_FRACTION = 1.0
+TERRAIN_CONFIGURATION_METHOD = "hemispheric_closure"
 SUNLIT_VISIBILITY_THRESHOLD = 0.5
 
 TERRAIN_ORDER = (
@@ -110,6 +111,7 @@ def read_records(input_file):
         "terrain_label",
         "sample",
         "band",
+        "terrain_configuration_method",
     }
     records = []
     with input_file.open("r", newline="", encoding="utf-8") as stream:
@@ -134,6 +136,10 @@ def select_all_snow_records(records):
             record["opposite_wall_snow_fraction"],
             OPPOSITE_WALL_SNOW_FRACTION,
         )
+        and record.get(
+            "terrain_configuration_method",
+            TERRAIN_CONFIGURATION_METHOD,
+        ) == TERRAIN_CONFIGURATION_METHOD
     ]
     if not selected:
         raise ValueError(
@@ -269,7 +275,8 @@ def figure_caption():
     caption = (
         "Full REDRESS case 5 over analytical DEMs; snow SSA=20 m² kg⁻¹, "
         "global SZA=45°, and the designated opposite wall is fully snow "
-        "covered. Each radiance component is expressed on the TOA-reflectance "
+        "covered. Terrain configuration uses hemispheric closure, Ct=1−Vd. "
+        "Each radiance component is expressed on the TOA-reflectance "
         "scale as ρ_TOA L_component / ΣL_component, so each stack sums to the "
         "modelled TOA reflectance (open circle). ‘Diffuse surface’ includes "
         "sky-diffuse, terrain-reflected, and atmosphere–terrain-coupled "

@@ -22,12 +22,14 @@ import numpy as np
 import xarray as xr
 
 from redress.inputs.products import Dem, Model
+from redress.topography import dem_products
 from redress.topography.forward_model import Cases, iterative_radiance
 from redress.topography.idealized import (
     circular_bowl,
     flat_plateau,
     narrow_couloir,
     symmetric_v_valley,
+    symmetric_v_valley_wall_view_factor,
     uniform_slope,
 )
 
@@ -67,6 +69,11 @@ ATMOSPHERIC_PROFILE = None
 
 REDRESS_CASE_NUMBER = 5
 OPPOSITE_WALL_SNOW_FRACTIONS = (1.0, 0.5, 0.0)
+TERRAIN_CONFIGURATION_METHODS = (
+    "hemispheric_closure",
+    "dozier_frew",
+)
+PRIMARY_TERRAIN_CONFIGURATION_METHOD = "hemispheric_closure"
 
 # Illustrative Lambertian snow-free alpine ground. Values are surface
 # reflectance factors, not Sentinel-2 TOA reflectances.
@@ -91,6 +98,8 @@ TOPOGRAPHIC_VARIABLES = (
     "eff_vza",
     "vt",
     "ct",
+    "ct_hemispheric_closure",
+    "ct_dozier_frew",
     "beam_visibility",
     "self_shadows",
     "cast_shadows",
@@ -204,8 +213,27 @@ def derive_topography(terrain):
     dem.compute_topo_bands(
         self_shadow_cosine_threshold=0.0,
         clean_cast_shadows=False,
-        terrain_configuration_method="dozier_frew",
+        terrain_configuration_method=(
+            PRIMARY_TERRAIN_CONFIGURATION_METHOD
+        ),
     )
+    for method in TERRAIN_CONFIGURATION_METHODS:
+        _, terrain_factor = dem_products.skyview(
+            dem.bands["horizon_ele"].data,
+            dem.bands["slope"].data,
+            dem.bands["aspect"].data,
+            terrain_configuration_method=method,
+        )
+        variable = f"ct_{method}"
+        dem.bands[variable] = xr.DataArray(
+            terrain_factor,
+            dims=("x", "y"),
+            coords={
+                "x": terrain.northing_m,
+                "y": terrain.easting_m,
+            },
+            attrs={"units": "1", "method": method},
+        )
     return dem
 
 
@@ -276,6 +304,42 @@ def validate_terrain_sequence(terrain_products):
         )
 
 
+def v_valley_away_wall_mask(terrain):
+    """Return the wall opposite the designated sun-facing source wall."""
+
+    if not terrain.name.startswith("v_valley_"):
+        return np.zeros(terrain.elevation_m.shape, dtype=bool)
+    north = np.broadcast_to(
+        terrain.northing_m[:, np.newaxis],
+        terrain.elevation_m.shape,
+    )
+    source_north = north[terrain.opposite_wall_mask]
+    wall_extent = float(np.max(source_north))
+    return (north < 0.0) & (north >= -wall_extent)
+
+
+def report_v_valley_view_factor_check(terrain_products):
+    """Compare raster Ct with the exact two-wall crossed-string solution."""
+
+    print("\nV-valley wall-to-wall view-factor check")
+    print("beta  raster mean Ct  exact 1-cos(beta)  difference")
+    for wall_slope in (25.0, 45.0, 55.0):
+        terrain_name = f"v_valley_{wall_slope:g}"
+        terrain, dem = terrain_products[terrain_name]
+        away_wall = v_valley_away_wall_mask(terrain)
+        valid = away_wall & np.isfinite(
+            dem.bands["ct_hemispheric_closure"].values
+        )
+        raster_mean = float(np.mean(
+            dem.bands["ct_hemispheric_closure"].values[valid]
+        ))
+        exact = symmetric_v_valley_wall_view_factor(wall_slope)
+        print(
+            f"{wall_slope:4.0f}°  {raster_mean:14.4f}  "
+            f"{exact:17.4f}  {raster_mean - exact:+.4f}"
+        )
+
+
 def configured_model(dem):
     """Prepare snow optics and atmospheric inputs on one derived DEM."""
 
@@ -321,7 +385,12 @@ def mixed_surface_optics(snow_value, snow_fraction, ground_reflectance):
     )
 
 
-def simulate_cover(model, terrain, opposite_wall_snow_fraction):
+def simulate_cover(
+    model,
+    terrain,
+    opposite_wall_snow_fraction,
+    terrain_configuration_method,
+):
     """Run full REDRESS for one opposite-wall material configuration."""
 
     case = Cases()
@@ -329,6 +398,10 @@ def simulate_cover(model, terrain, opposite_wall_snow_fraction):
     snow_fraction = surface_snow_fraction(
         terrain, opposite_wall_snow_fraction
     )
+    topography = model.topo_bands.copy(deep=False)
+    topography["ct"] = model.topo_bands[
+        f"ct_{terrain_configuration_method}"
+    ]
     band_definitions = model.meta["band_definitions"]
     reflectance = []
     components = {
@@ -358,7 +431,7 @@ def simulate_cover(model, terrain, opposite_wall_snow_fraction):
         )
 
         result = iterative_radiance(
-            topo_bands=model.topo_bands,
+            topo_bands=topography,
             angles=model.angles,
             wavelength=wavelength,
             hdr=hdr,
@@ -410,13 +483,15 @@ def raster_output_dataset(
     terrain,
     model,
     opposite_wall_snow_fraction,
+    terrain_configuration_method,
     reflectance,
 ):
     """Package full TOA-reflectance rasters for one experiment."""
 
     experiment = (
         f"{terrain.name}_wall_snow_"
-        f"{opposite_wall_snow_fraction:.2f}"
+        f"{opposite_wall_snow_fraction:.2f}_"
+        f"{terrain_configuration_method}"
     )
     dataset = xr.Dataset(
         {
@@ -440,6 +515,9 @@ def raster_output_dataset(
         opposite_wall_snow_fraction=(
             "experiment", [opposite_wall_snow_fraction]
         ),
+        terrain_configuration_method=(
+            "experiment", [terrain_configuration_method]
+        ),
     )
 
 
@@ -448,6 +526,7 @@ def sample_records(
     dem,
     model,
     opposite_wall_snow_fraction,
+    terrain_configuration_method,
     reflectance,
     components,
 ):
@@ -466,6 +545,9 @@ def sample_records(
                 "opposite_wall_snow_fraction": (
                     opposite_wall_snow_fraction
                 ),
+                "terrain_configuration_method": (
+                    terrain_configuration_method
+                ),
                 "band": band,
                 "wavelength_nm": model.meta["wavelengths"][band_index],
                 "toa_reflectance": reflectance[
@@ -473,7 +555,29 @@ def sample_records(
                 ],
             }
             for name in TOPOGRAPHIC_VARIABLES:
-                record[name] = dem.bands[name].values[row, column]
+                source_name = (
+                    f"ct_{terrain_configuration_method}"
+                    if name == "ct"
+                    else name
+                )
+                record[name] = dem.bands[source_name].values[row, column]
+            record["analytical_wall_view_factor"] = (
+                symmetric_v_valley_wall_view_factor(
+                    float(terrain.name.removeprefix("v_valley_"))
+                )
+                if terrain.name.startswith("v_valley_")
+                else np.nan
+            )
+            away_wall = v_valley_away_wall_mask(terrain)
+            record["raster_wall_mean_ct"] = (
+                float(np.nanmean(
+                    dem.bands[
+                        f"ct_{terrain_configuration_method}"
+                    ].values[away_wall]
+                ))
+                if np.any(away_wall)
+                else np.nan
+            )
             for name, values in components.items():
                 record[f"toa_{name}_radiance"] = values[
                     band_index, row, column
@@ -555,6 +659,14 @@ def main():
 
     if GRID_SIZE % 2 == 0:
         raise ValueError("GRID_SIZE must be odd")
+    if (
+        PRIMARY_TERRAIN_CONFIGURATION_METHOD
+        not in TERRAIN_CONFIGURATION_METHODS
+    ):
+        raise ValueError(
+            "PRIMARY_TERRAIN_CONFIGURATION_METHOD must be included in "
+            "TERRAIN_CONFIGURATION_METHODS"
+        )
     missing_ground_bands = set(BANDS).difference(GROUND_REFLECTANCE)
     if missing_ground_bands:
         raise ValueError(
@@ -574,6 +686,7 @@ def main():
         topography_outputs.append(topography_for_output(terrain, dem))
 
     validate_terrain_sequence(terrain_products)
+    report_v_valley_view_factor_check(terrain_products)
 
     raster_outputs = []
     records = []
@@ -586,29 +699,33 @@ def main():
             else (1.0,)
         )
         for snow_fraction in cover_fractions:
-            print(
-                f"Running {terrain.label}; opposite-wall snow "
-                f"fraction={snow_fraction:.2f}"
-            )
-            reflectance, components = simulate_cover(
-                model,
-                terrain,
-                snow_fraction,
-            )
-            raster_outputs.append(raster_output_dataset(
-                terrain,
-                model,
-                snow_fraction,
-                reflectance,
-            ))
-            records.extend(sample_records(
-                terrain,
-                dem,
-                model,
-                snow_fraction,
-                reflectance,
-                components,
-            ))
+            for method in TERRAIN_CONFIGURATION_METHODS:
+                print(
+                    f"Running {terrain.label}; opposite-wall snow "
+                    f"fraction={snow_fraction:.2f}; Ct={method}"
+                )
+                reflectance, components = simulate_cover(
+                    model,
+                    terrain,
+                    snow_fraction,
+                    method,
+                )
+                raster_outputs.append(raster_output_dataset(
+                    terrain,
+                    model,
+                    snow_fraction,
+                    method,
+                    reflectance,
+                ))
+                records.extend(sample_records(
+                    terrain,
+                    dem,
+                    model,
+                    snow_fraction,
+                    method,
+                    reflectance,
+                    components,
+                ))
 
     topography = xr.concat(
         topography_outputs,
@@ -622,6 +739,12 @@ def main():
         horizon_directions=2 * HORIZON_HALF_DIRECTIONS,
         terrain_window_width_m=TERRAIN_WINDOW_WIDTH_M,
         atmosphere_window_width_m=ATMOSPHERE_WINDOW_WIDTH_M,
+        primary_terrain_configuration_method=(
+            PRIMARY_TERRAIN_CONFIGURATION_METHOD
+        ),
+        terrain_configuration_sensitivity_methods=(
+            ", ".join(TERRAIN_CONFIGURATION_METHODS)
+        ),
     )
     rename_spatial_dimensions(topography).to_netcdf(TOPOGRAPHY_OUTPUT)
 
@@ -635,6 +758,9 @@ def main():
         title="REDRESS TOA reflectance over analytical terrains",
         redress_case_number=REDRESS_CASE_NUMBER,
         ground_model="Lambertian linear snow-ground areal mixture",
+        primary_terrain_configuration_method=(
+            PRIMARY_TERRAIN_CONFIGURATION_METHOD
+        ),
     )
     rename_spatial_dimensions(reflectance_maps).to_netcdf(
         REFLECTANCE_OUTPUT

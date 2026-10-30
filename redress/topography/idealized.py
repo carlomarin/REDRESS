@@ -29,6 +29,20 @@ class IdealizedTerrain:
     samples: tuple[TerrainSample, ...]
 
 
+def symmetric_v_valley_wall_view_factor(wall_slope_degree):
+    """Return the exact wall-to-wall view factor of an infinite 2-D V.
+
+    The crossed-string construction for two equal walls of length L gives
+    F12 = (2 L - 2 L cos(beta)) / (2 L) = 1 - cos(beta). This is the
+    wall-area-mean Lambertian view factor and provides an independent check
+    on the raster-derived hemispheric terrain factor.
+    """
+
+    if not 0.0 <= wall_slope_degree < 90.0:
+        raise ValueError("wall_slope_degree must be in [0, 90) degrees")
+    return 1.0 - np.cos(np.deg2rad(wall_slope_degree))
+
+
 def metric_grid(grid_size, pixel_resolution_m):
     """Return northing/easting axes and grids centred on the middle cell."""
 

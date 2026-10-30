@@ -17,6 +17,9 @@ from redress.topography.dem_products import (
     terrain_visibility,
 )
 from redress.inputs.products import Dem
+from redress.topography.idealized import (
+    symmetric_v_valley_wall_view_factor,
+)
 
 
 class Test_dem_prods(object):
@@ -76,7 +79,15 @@ class Test_dem_prods(object):
         visible_sky, terrain = skyview(horizon, slope, aspect)
 
         assert visible_sky[0, 0] == approx(np.cos(np.deg2rad(45.0)))
-        assert terrain[0, 0] == approx(
+        assert terrain[0, 0] == approx(1.0 - visible_sky[0, 0])
+
+        _, dozier_frew_terrain = skyview(
+            horizon,
+            slope,
+            aspect,
+            terrain_configuration_method="dozier_frew",
+        )
+        assert dozier_frew_terrain[0, 0] == approx(
             (1.0 + np.cos(np.deg2rad(45.0))) / 2.0
             - visible_sky[0, 0]
         )
@@ -88,6 +99,14 @@ class Test_dem_prods(object):
             terrain_configuration_method="redress_bowl",
         )
         assert bowl_terrain[0, 0] == approx(1.0 - visible_sky[0, 0])
+
+    def test_symmetric_v_valley_exact_wall_view_factor(self):
+        assert symmetric_v_valley_wall_view_factor(25.0) == approx(
+            1.0 - np.cos(np.deg2rad(25.0))
+        )
+        assert symmetric_v_valley_wall_view_factor(55.0) == approx(
+            1.0 - np.cos(np.deg2rad(55.0))
+        )
 
     def test_horizontal_skyview_matches_horizon_elevation(self):
         horizon = np.full((64, 1, 1), 30.0)

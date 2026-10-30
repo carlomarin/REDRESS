@@ -70,7 +70,7 @@ def skyview(
     horz_data,
     slp,
     asp,
-    terrain_configuration_method="dozier_frew",
+    terrain_configuration_method="hemispheric_closure",
 ):
     """ Compute the sky view factor.
 
@@ -82,8 +82,10 @@ def skyview(
         horz_data (ndarray): horizon elevation data computed from the DEM
         slp (ndarray): slope calculated from the DEM
         asp (ndarray): aspect calculated from the DEM
-        terrain_configuration_method (str): use the Dozier--Frew geometric
-            approximation or the legacy REDRESS bowl closure.
+        terrain_configuration_method (str): ``hemispheric_closure`` uses the
+            complete outward hemisphere, Ct = 1 - Vd. ``dozier_frew`` uses
+            Ct = (1 + cos(slope)) / 2 - Vd. ``redress_bowl`` is retained as
+            an alias for ``hemispheric_closure``.
 
     Returns:
         vd (ndarray): skyview factor
@@ -133,12 +135,15 @@ def skyview(
     if terrain_configuration_method == "dozier_frew":
         unobstructed_slope_sky = (1.0 + cos_slope) / 2.0
         ct = np.clip(unobstructed_slope_sky - vd, 0.0, 1.0)
-    elif terrain_configuration_method == "redress_bowl":
+    elif terrain_configuration_method in (
+        "hemispheric_closure",
+        "redress_bowl",
+    ):
         ct = 1.0 - vd
     else:
         raise ValueError(
-            "terrain_configuration_method must be 'dozier_frew' or "
-            "'redress_bowl'"
+            "terrain_configuration_method must be 'hemispheric_closure', "
+            "'dozier_frew', or 'redress_bowl'"
         )
     ct[invalid] = np.nan
 
