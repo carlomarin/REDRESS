@@ -13,8 +13,10 @@ Edit ``TERRAIN_CASES`` and the common physical parameters below, then run:
 ``python examples/illustrate_sentinel2_terrain_transition.py``
 """
 
+from calendar import month_name
 from dataclasses import dataclass
 from pathlib import Path
+import textwrap
 
 import matplotlib.pyplot as plt
 
@@ -43,6 +45,10 @@ VIEW_ZENITH_ANGLE_DEG = 0.0
 
 # Snow and atmosphere shared by every terrain case.
 SPECIFIC_SURFACE_AREA_M2_KG = 20.0
+BLACK_CARBON_NG_G = 0.0
+DUST_UG_G = 0.0
+DUST_DENSITY_KG_M3 = 2600.0
+DUST_MODEL = "muller2011"
 ALTITUDE_M = 2000.0
 AOD550 = 0.10
 WATER_VAPOUR_G_CM2 = 1.0
@@ -136,6 +142,10 @@ def build_scenario(terrain_case):
         name=terrain_case.name,
         category="Terrain transition",
         specific_surface_area=SPECIFIC_SURFACE_AREA_M2_KG,
+        black_carbon_ng_g=BLACK_CARBON_NG_G,
+        dust_ug_g=DUST_UG_G,
+        dust_density_kg_m3=DUST_DENSITY_KG_M3,
+        dust_model=DUST_MODEL,
         solar_zenith_angle=SOLAR_ZENITH_ANGLE_DEG,
         local_incidence_angle=terrain_case.local_incidence_angle_deg,
         view_zenith_angle=VIEW_ZENITH_ANGLE_DEG,
@@ -187,10 +197,44 @@ def legend_label(terrain_case):
     )
 
 
+def figure_caption():
+    """Describe all fixed physical assumptions shown in the figure."""
+
+    snow_description = (
+        f"snow SSA={SPECIFIC_SURFACE_AREA_M2_KG:g} m² kg⁻¹, "
+        f"black carbon={BLACK_CARBON_NG_G:g} ng g⁻¹ and "
+        f"dust={DUST_UG_G:g} µg g⁻¹"
+    )
+    if DUST_UG_G > 0:
+        snow_description += (
+            f" ({DUST_MODEL}, density={DUST_DENSITY_KG_M3:g} kg m⁻³)"
+        )
+
+    if ATMOSPHERIC_PROFILE is None:
+        gas_description = (
+            f"water vapour={WATER_VAPOUR_G_CM2:g} g cm⁻² and "
+            f"ozone={OZONE_CM_ATM:g} cm-atm"
+        )
+    else:
+        gas_description = f"gaseous profile={ATMOSPHERIC_PROFILE}"
+
+    caption = (
+        f"{PLATFORM} MSI simulation for {DAY} {month_name[MONTH]} at "
+        f"{ALTITUDE_M:g} m: {snow_description}. Atmosphere: "
+        f"{AEROSOL_MODEL} aerosol, AOD₅₅₀={AOD550:g}, "
+        f"{gas_description}. The flat spectrum uses REDRESS case 1; "
+        "sloping spectra use the simplified case 2 of Lamare et al. "
+        "(2020, Sect. 2.2). Vd and direct-beam visibility b are reported "
+        "in the legend; prescribed surroundings satisfy Ct=1−Vd. Terrain "
+        "reillumination and atmosphere–terrain coupling are excluded."
+    )
+    return textwrap.fill(caption, width=145)
+
+
 def plot_reflectance(simulations):
     """Plot only the TOA-reflectance spectra for the configured cases."""
 
-    figure, axis = plt.subplots(figsize=(10.0, 6.2), constrained_layout=True)
+    figure, axis = plt.subplots(figsize=(10.0, 7.2))
 
     for terrain_case, simulation in zip(TERRAIN_CASES, simulations):
         axis.plot(
@@ -214,6 +258,22 @@ def plot_reflectance(simulations):
     axis.grid(alpha=0.22)
     axis.spines[["top", "right"]].set_visible(False)
     axis.legend(frameon=False, fontsize=8.5)
+
+    figure.subplots_adjust(
+        left=0.10,
+        right=0.98,
+        top=0.86,
+        bottom=0.25,
+    )
+    figure.text(
+        0.10,
+        0.035,
+        figure_caption(),
+        ha="left",
+        va="bottom",
+        fontsize=8.5,
+        linespacing=1.35,
+    )
     return figure
 
 
