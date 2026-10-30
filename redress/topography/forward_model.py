@@ -462,8 +462,8 @@ def iterative_radiance(
             LtNA = (td * re[:, :, i - 1] *
                     (EdP_flat + EhP_flat + EtGAP)) / np.pi
 
-        # Diffuse radiation reflected by pixel to the satellite sensor
-        # Eq. 4
+        # Diffuse radiation reflected by the pixel toward the sensor, Eq. 5.
+        # By reciprocity, hdr is the direct albedo evaluated at eff_vza.
         LhP = view_ground * (hdr / np.pi) * EhP * T_dir_up
 
         # TOA radiance (equation 1)

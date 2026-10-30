@@ -7,6 +7,7 @@ import numpy as np
 from redress.optics.snow import (
     albedo_kokhanovsky,
     brf_kokhanovsky,
+    directional_albedo_kokhanovsky,
     lap_impurities,
 )
 
@@ -36,6 +37,39 @@ def test_albedo_accepts_raster_solar_zenith_angles():
         total,
         (1.0 - diffuse_fraction) * direct
         + diffuse_fraction * diffuse,
+    )
+
+
+def test_hdr_by_reciprocity_uses_local_view_zenith(monkeypatch):
+    """Evaluate direct albedo at eff_vza to obtain Eq. 5's a_v."""
+
+    received_zenith = []
+
+    def fake_direct_albedo(wavelength_m, zenith, ssa, **kwargs):
+        received_zenith.append(zenith)
+        return zenith
+
+    monkeypatch.setattr(
+        "redress.optics.snow.so.albedo_direct_KZ04",
+        fake_direct_albedo,
+    )
+    local_view_zenith = np.deg2rad(
+        np.array([
+            [5.0, 25.0],
+            [25.0, 40.0],
+        ])
+    )
+
+    hdr = directional_albedo_kokhanovsky(
+        wls=800.0,
+        zenith=local_view_zenith,
+        ssa=20.0,
+    )
+
+    np.testing.assert_allclose(hdr, local_view_zenith)
+    np.testing.assert_allclose(
+        received_zenith,
+        np.unique(local_view_zenith),
     )
 
 
