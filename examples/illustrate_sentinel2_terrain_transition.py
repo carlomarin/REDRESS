@@ -131,7 +131,7 @@ TERRAIN_CASES = (
         local_incidence_angle_deg=70.0,
         local_view_zenith_angle_deg=25.0,
         relative_azimuth_angle_deg=0.0,
-        sky_view_factor=0.60,
+        sky_view_factor=0.91,
         shadowed=True,
         redress_case=2,
     ),
@@ -263,12 +263,11 @@ def figure_caption():
         f"VZA={VIEW_ZENITH_ANGLE_DEG:g}°. Flat terrain uses REDRESS case 1; "
         "slopes use the simplified case 2 of Lamare et al. (2020, "
         "Sect. 2.2), with prescribed Ct=1−Vd and without terrain "
-        "reillumination or atmosphere–terrain coupling. Relative to the "
-        "illuminated away-facing slope, the cast-shadow case changes both "
-        "direct-beam visibility (b=1 to b=0) and sky-view factor (Vd=0.91 "
-        "to Vd=0.60); it therefore combines direct-shadow and diffuse-sky "
-        "effects rather than isolating shadow alone. The lower row is each "
-        "spectrum divided band by band by flat terrain at the same SSA. "
+        "reillumination or atmosphere–terrain coupling. The illuminated and "
+        "cast-shadow away-facing slopes have identical geometry and Vd=0.91; "
+        "only direct-beam visibility changes from b=1 to b=0, isolating the "
+        "effect of direct shadow. The lower row is each spectrum divided "
+        "band by band by flat terrain at the same SSA. "
         "Overlapping SSA colours indicate snow-independent terrain scaling; "
         "separation indicates that terrain-specific endmembers are required "
         "for each snow type."
