@@ -442,6 +442,9 @@ class Model(object):
             rt = self.rt_model()
             rt_wavelength = (band_definition.py6s_filter
                              if band_definition is not None else wvl)
+            # Global satellite geometry is used here only for the 6S
+            # atmospheric irradiance calculation. The snow DHR and HDR below
+            # use eff_sza and eff_vza, respectively.
             rt.run(self.angles["SZA"].data.mean(),
                    self.angles["SAA"].data.mean(),
                    self.angles["VZA"].data.mean(),
