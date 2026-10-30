@@ -22,6 +22,26 @@ from redress.topography.forward_model import (
 )
 
 
+_GRAZING_ZENITH = np.nextafter(np.pi / 2.0, 0.0)
+
+
+def _surface_optics_zenith(zenith):
+    """Limit angular snow optics to directions above the local horizon.
+
+    Self-shadowed or sensor-hidden facets can have effective zenith angles
+    greater than 90 degrees. Their direct radiance is removed later by the
+    beam- and view-visibility masks. Evaluating their otherwise-unused snow
+    optics at the grazing limit keeps the analytical functions in their
+    physical domain and prevents invalid intermediate values.
+    """
+
+    return np.clip(
+        np.asarray(zenith, dtype=np.float64),
+        0.0,
+        _GRAZING_ZENITH,
+    )
+
+
 class Sat(object):
     """ Satellite image class
 
@@ -470,8 +490,12 @@ class Model(object):
 
             self.difftot.append(diffuse_total_ratio)
 
-            local_incidence = self.topo_bands["eff_sza"].data
-            local_view_zenith = self.topo_bands["eff_vza"].data
+            local_incidence = _surface_optics_zenith(
+                self.topo_bands["eff_sza"].data
+            )
+            local_view_zenith = _surface_optics_zenith(
+                self.topo_bands["eff_vza"].data
+            )
 
             # The direct albedo is the DHR at local incidence. Equation 5 of
             # Lamare et al. (2020) instead requires the pixel HDR at the local
@@ -553,13 +577,20 @@ class Model(object):
                 geometric_relative_azimuth
             )
 
+        illumination_zenith = _surface_optics_zenith(
+            self.topo_bands["eff_sza"]
+        )
+        viewing_zenith = _surface_optics_zenith(
+            self.topo_bands["eff_vza"]
+        )
+
         # Calculate BRF for the local geometry, wavelength and snow SSA.
         for wvl, band_definition in zip(self.meta["wavelengths"],
                                         band_definitions):
             if band_definition is None:
                 band_brf = snow.brf_kokhanovsky(
-                    self.topo_bands["eff_sza"],
-                    self.topo_bands["eff_vza"],
+                    illumination_zenith,
+                    viewing_zenith,
                     relative_azimuth,
                     wvl,
                     self.ssa,
@@ -568,8 +599,8 @@ class Model(object):
             else:
                 spectral_brf = [
                     snow.brf_kokhanovsky(
-                        self.topo_bands["eff_sza"],
-                        self.topo_bands["eff_vza"],
+                        illumination_zenith,
+                        viewing_zenith,
                         relative_azimuth,
                         spectral_wavelength,
                         self.ssa,

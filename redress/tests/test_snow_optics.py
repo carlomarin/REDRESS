@@ -43,15 +43,12 @@ def test_albedo_accepts_raster_solar_zenith_angles():
 def test_hdr_by_reciprocity_uses_local_view_zenith(monkeypatch):
     """Evaluate direct albedo at eff_vza to obtain Eq. 5's a_v."""
 
-    received_zenith = []
-
-    def fake_direct_albedo(wavelength_m, zenith, ssa, **kwargs):
-        received_zenith.append(zenith)
-        return zenith
+    def fake_compute_alpha(wavelength_m, ssa, **kwargs):
+        return 0.49
 
     monkeypatch.setattr(
-        "redress.optics.snow.so.albedo_direct_KZ04",
-        fake_direct_albedo,
+        "redress.optics.snow.so.compute_alpha",
+        fake_compute_alpha,
     )
     local_view_zenith = np.deg2rad(
         np.array([
@@ -66,11 +63,12 @@ def test_hdr_by_reciprocity_uses_local_view_zenith(monkeypatch):
         ssa=20.0,
     )
 
-    np.testing.assert_allclose(hdr, local_view_zenith)
-    np.testing.assert_allclose(
-        received_zenith,
-        np.unique(local_view_zenith),
+    expected = np.exp(
+        -0.7
+        * (3.0 / 7.0)
+        * (1.0 + 2.0 * np.cos(local_view_zenith))
     )
+    np.testing.assert_allclose(hdr, expected)
 
 
 def test_lap_concentrations_are_converted_to_mass_fractions():

@@ -8,7 +8,19 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from redress.inputs.products import Model
+from redress.inputs.products import Model, _surface_optics_zenith
+
+
+def test_surface_optics_clips_hidden_directions_to_grazing():
+    zenith = np.deg2rad(np.asarray([-5.0, 45.0, 100.0, np.nan]))
+
+    clipped = _surface_optics_zenith(zenith)
+
+    assert clipped[0] == 0.0
+    np.testing.assert_allclose(clipped[1], np.deg2rad(45.0))
+    assert clipped[2] < np.pi / 2.0
+    assert clipped[2] > np.deg2rad(89.999)
+    assert np.isnan(clipped[3])
 
 
 class _FakeRadiativeTransferModel:

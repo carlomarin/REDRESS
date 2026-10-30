@@ -167,22 +167,19 @@ def directional_albedo_kokhanovsky(
     if np.any((zenith < 0) | (zenith > np.pi / 2)):
         raise ValueError("zenith angles must be in [0, pi/2] radians")
 
-    # Snowoptics 0.99.2 validates the cosine with a scalar assertion. Evaluate
-    # each distinct angle once, then restore the original raster shape.
-    unique_zenith, inverse = np.unique(zenith, return_inverse=True)
-    unique_albedo = np.asarray([
-        so.albedo_direct_KZ04(
-            wavelength_m,
-            float(angle),
-            ssa,
-            impurities=impurities,
-            ni="w2008",
-            B=B,
-            g=g,
-        )
-        for angle in unique_zenith
-    ])
-    return unique_albedo[inverse].reshape(zenith.shape)
+    # Snowoptics 0.99.2 implements this expression directly but validates the
+    # cosine with a scalar assertion. Reproduce the same ART equation here so
+    # full rasters of local angles are evaluated without a Python pixel loop.
+    alpha = so.compute_alpha(
+        wavelength_m,
+        ssa,
+        impurities=impurities,
+        ni="w2008",
+        B=B,
+        g=g,
+    )
+    angular_factor = (3.0 / 7.0) * (1.0 + 2.0 * np.cos(zenith))
+    return np.exp(-np.sqrt(alpha) * angular_factor)
 
 
 def brf_kokhanovsky(
