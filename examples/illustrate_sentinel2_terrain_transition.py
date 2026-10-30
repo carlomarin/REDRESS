@@ -81,6 +81,7 @@ class TerrainCase:
 
     name: str
     label: str
+    physical_setting: str
     local_incidence_angle_deg: float
     local_view_zenith_angle_deg: float
     relative_azimuth_angle_deg: float
@@ -93,6 +94,7 @@ TERRAIN_CASES = (
     TerrainCase(
         name="flat",
         label="Flat terrain",
+        physical_setting="Horizontal surface",
         local_incidence_angle_deg=45.0,
         local_view_zenith_angle_deg=0.0,
         relative_azimuth_angle_deg=0.0,
@@ -103,6 +105,7 @@ TERRAIN_CASES = (
     TerrainCase(
         name="sun_facing",
         label="Sun-facing slope",
+        physical_setting="25° slope facing the Sun",
         local_incidence_angle_deg=20.0,
         local_view_zenith_angle_deg=25.0,
         relative_azimuth_angle_deg=180.0,
@@ -113,6 +116,7 @@ TERRAIN_CASES = (
     TerrainCase(
         name="away_facing",
         label="Away-facing slope",
+        physical_setting="25° slope facing away from the Sun",
         local_incidence_angle_deg=70.0,
         local_view_zenith_angle_deg=25.0,
         relative_azimuth_angle_deg=0.0,
@@ -123,6 +127,7 @@ TERRAIN_CASES = (
     TerrainCase(
         name="cast_shadow",
         label="Cast shadow",
+        physical_setting="Shaded 25° away-facing slope",
         local_incidence_angle_deg=70.0,
         local_view_zenith_angle_deg=25.0,
         relative_azimuth_angle_deg=0.0,
@@ -213,7 +218,7 @@ def terrain_header(terrain_case):
 
     beam_visibility = 0 if terrain_case.shadowed else 1
     return (
-        f"{terrain_case.label}\n"
+        f"{terrain_case.physical_setting}\n"
         f"i={terrain_case.local_incidence_angle_deg:g}°, "
         f"v={terrain_case.local_view_zenith_angle_deg:g}°, "
         f"RAA_geom={terrain_case.relative_azimuth_angle_deg:g}°, "
@@ -258,8 +263,12 @@ def figure_caption():
         f"VZA={VIEW_ZENITH_ANGLE_DEG:g}°. Flat terrain uses REDRESS case 1; "
         "slopes use the simplified case 2 of Lamare et al. (2020, "
         "Sect. 2.2), with prescribed Ct=1−Vd and without terrain "
-        "reillumination or atmosphere–terrain coupling. The lower row is "
-        "each spectrum divided band by band by flat terrain at the same SSA. "
+        "reillumination or atmosphere–terrain coupling. Relative to the "
+        "illuminated away-facing slope, the cast-shadow case changes both "
+        "direct-beam visibility (b=1 to b=0) and sky-view factor (Vd=0.91 "
+        "to Vd=0.60); it therefore combines direct-shadow and diffuse-sky "
+        "effects rather than isolating shadow alone. The lower row is each "
+        "spectrum divided band by band by flat terrain at the same SSA. "
         "Overlapping SSA colours indicate snow-independent terrain scaling; "
         "separation indicates that terrain-specific endmembers are required "
         "for each snow type."
