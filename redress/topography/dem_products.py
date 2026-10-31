@@ -206,7 +206,14 @@ def terrain_visibility(
         horizon_elevation_at_azimuth(horz_data, azimuth)
     )
     ray_elevation = np.pi / 2.0 - zenith
-    front_facing = np.cos(effective_zenith) > min_cosine
+    # Treat a mathematically tangent ray as non-visible even when floating-
+    # point evaluation leaves a small positive cosine. The tolerance is far
+    # below any meaningful terrain or angular uncertainty.
+    visibility_threshold = max(
+        float(min_cosine),
+        32.0 * np.finfo(np.float64).eps,
+    )
+    front_facing = np.cos(effective_zenith) > visibility_threshold
     above_horizon = ray_elevation > horizon_elevation
     visibility = np.logical_and(front_facing, above_horizon).astype(np.float64)
 
@@ -292,10 +299,19 @@ def shadows(
 
     del slp, asp  # Retained in the public signature for backward compatibility.
 
+    if not np.isfinite(min_cosine) or not 0.0 <= min_cosine < 1.0:
+        raise ValueError("min_cosine must be finite and in [0, 1)")
+
     effective_zenith = np.asarray(eff_sza, dtype=np.float64)
+    visibility_threshold = max(
+        float(min_cosine),
+        32.0 * np.finfo(np.float64).eps,
+    )
     self_visibility = np.where(
         np.isfinite(effective_zenith),
-        (np.cos(effective_zenith) > min_cosine).astype(np.float64),
+        (
+            np.cos(effective_zenith) > visibility_threshold
+        ).astype(np.float64),
         np.nan,
     )
     cast_visibility = terrain_visibility(

@@ -54,6 +54,7 @@ SOLAR_ZENITH_DEG = 45.0
 SOLAR_AZIMUTH_DEG = 180.0
 VIEW_ZENITH_DEG = 0.0
 VIEW_AZIMUTH_DEG = 0.0
+SELF_SHADOW_COSINE_THRESHOLD = 0.035
 
 SNOW_SPECIFIC_SURFACE_AREA_M2_KG = 20.0
 BLACK_CARBON_NG_G = 0.0
@@ -222,7 +223,7 @@ def derive_topography(terrain):
     print(f"Computing horizons: {terrain.label}")
     dem.compute_horizon(N=HORIZON_HALF_DIRECTIONS)
     dem.compute_topo_bands(
-        self_shadow_cosine_threshold=0.0,
+        self_shadow_cosine_threshold=SELF_SHADOW_COSINE_THRESHOLD,
         clean_cast_shadows=False,
         terrain_configuration_method=(
             PRIMARY_TERRAIN_CONFIGURATION_METHOD
@@ -307,6 +308,13 @@ def validate_terrain_sequence(terrain_products):
         "v_valley_25", "self_shadows", "away_wall_midpoint"
     ) != 1.0:
         raise AssertionError("The 25° away-facing valley wall should be lit")
+    if value(
+        "v_valley_45", "self_shadows", "away_wall_midpoint"
+    ) != 0.0:
+        raise AssertionError(
+            "The 45° away-facing valley wall should be self-shadowed at "
+            "tangent solar incidence"
+        )
     if value(
         "v_valley_55", "self_shadows", "away_wall_midpoint"
     ) != 0.0:
@@ -573,6 +581,9 @@ def sample_records(
                 "terrain_configuration_method": (
                     terrain_configuration_method
                 ),
+                "self_shadow_cosine_threshold": (
+                    SELF_SHADOW_COSINE_THRESHOLD
+                ),
                 "band": band,
                 "wavelength_nm": model.meta["wavelengths"][band_index],
                 "toa_reflectance": reflectance[
@@ -774,6 +785,7 @@ def main():
         horizon_directions=2 * HORIZON_HALF_DIRECTIONS,
         terrain_window_width_m=TERRAIN_WINDOW_WIDTH_M,
         atmosphere_window_width_m=ATMOSPHERE_WINDOW_WIDTH_M,
+        self_shadow_cosine_threshold=SELF_SHADOW_COSINE_THRESHOLD,
         primary_terrain_configuration_method=(
             PRIMARY_TERRAIN_CONFIGURATION_METHOD
         ),

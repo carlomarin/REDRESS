@@ -303,6 +303,18 @@ class Dem(object):
         }
         for name, unit in units.items():
             self.bands[name].attrs["units"] = unit
+        self.bands["self_shadows"].attrs["long_name"] = (
+            "local-surface direct-beam visibility; 1 is illuminated"
+        )
+        self.bands["cast_shadows"].attrs["long_name"] = (
+            "terrain-horizon direct-beam visibility; 1 is unobstructed"
+        )
+        self.bands["beam_visibility"].attrs["long_name"] = (
+            "combined direct-beam visibility; 1 is illuminated"
+        )
+        self.bands["self_shadows"].attrs[
+            "minimum_illuminated_cosine"
+        ] = self_shadow_cosine_threshold
         self.bands["ct"].attrs["method"] = terrain_configuration_method
         self.bands["local_relative_azimuth"].attrs["long_name"] = (
             "geometric local solar-view azimuth separation; zero is equal "

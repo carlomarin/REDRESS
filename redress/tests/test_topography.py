@@ -12,6 +12,7 @@ from redress.topography.dem_products import (
     horizon_elevation_at_azimuth,
     horneslope,
     local_relative_azimuth,
+    shadows,
     skyview,
     subpixel_visibility_fraction,
     terrain_visibility,
@@ -50,6 +51,40 @@ class Test_dem_prods(object):
         incidence = effective_zenith_angle(zenith, south, slope, south)
 
         assert incidence[0, 0] == approx(np.deg2rad(25.0))
+
+    def test_tangent_incidence_is_self_shadowed(self):
+        shape = (1, 1)
+        horizon = np.zeros((8, *shape))
+        incidence = np.full(shape, np.deg2rad(90.0))
+
+        _, self_visibility, _ = shadows(
+            horizon,
+            np.zeros(shape),
+            np.zeros(shape),
+            np.full(shape, np.deg2rad(45.0)),
+            incidence,
+            np.full(shape, np.pi),
+            min_cosine=0.0,
+        )
+
+        assert self_visibility[0, 0] == 0.0
+
+    def test_empirical_self_shadow_threshold_is_applied(self):
+        shape = (1, 1)
+        horizon = np.zeros((8, *shape))
+        incidence = np.full(shape, np.deg2rad(89.0))
+
+        _, self_visibility, _ = shadows(
+            horizon,
+            np.zeros(shape),
+            np.zeros(shape),
+            np.full(shape, np.deg2rad(45.0)),
+            incidence,
+            np.full(shape, np.pi),
+            min_cosine=0.035,
+        )
+
+        assert self_visibility[0, 0] == 0.0
 
     def test_local_relative_azimuth_matches_flat_surface_geometry(self):
         shape = (1, 1)
