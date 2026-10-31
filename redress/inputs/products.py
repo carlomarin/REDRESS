@@ -638,12 +638,15 @@ class Model(object):
         terrain_window_width_m=DEFAULT_TERRAIN_WINDOW_WIDTH_M,
         atmosphere_window_width_m=DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M,
         atmosphere_altitude_step_m=None,
+        weight_terrain_by_neighbour_beam_visibility=True,
     ):
         """Simulate TOA radiance with physical spatial scales.
 
         ``atmosphere_altitude_step_m`` activates a Py6S lookup over DEM
         elevation. When omitted, the legacy scene-mean atmospheric altitude
-        is retained.
+        is retained. ``weight_terrain_by_neighbour_beam_visibility`` controls
+        the published REDRESS approximation that suppresses the complete
+        terrain-reflected term according to the sunlit neighbour fraction.
         """
 
         self.toa_rad = xr.Dataset()
@@ -701,6 +704,9 @@ class Model(object):
                 terrain_window_width_m=terrain_window_width_m,
                 atmosphere_window_width_m=atmosphere_window_width_m,
                 atmosphere_altitude_step_m=atmosphere_altitude_step_m,
+                weight_terrain_by_neighbour_beam_visibility=(
+                    weight_terrain_by_neighbour_beam_visibility
+                ),
             )
             (synthetic_toa_radiance,
              synthetic_toa_reflectance,

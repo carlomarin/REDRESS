@@ -22,7 +22,8 @@ OUTPUT_PDF = Path(
 
 BANDS = ("B03", "B08", "B11")
 OPPOSITE_WALL_SNOW_FRACTION = 1.0
-TERRAIN_CONFIGURATION_METHOD = "hemispheric_closure"
+FINAL_CONFIGURATION_METHOD = "hemispheric_closure"
+FINAL_NEIGHBOUR_BEAM_WEIGHTING = 0.0
 
 ILLUMINATION_FIELDS = (
     ("pre_exchange_irradiance_a", "Away-facing wall", "#CC79A7"),
@@ -33,17 +34,43 @@ ILLUMINATION_FIELDS = (
         "#999999",
     ),
 )
-TERRAIN_FIELDS = (
-    ("redress_terrain_irradiance", "REDRESS", "#D55E00"),
+REDRESS_VARIANTS = (
+    (
+        "dozier_frew",
+        1.0,
+        "Dozier–Frew Ct; beam weighting",
+        "#999999",
+    ),
+    (
+        "hemispheric_closure",
+        1.0,
+        "Ct=1−Vd; beam weighting",
+        "#D55E00",
+    ),
+    (
+        "dozier_frew",
+        0.0,
+        "Dozier–Frew Ct; no beam weighting",
+        "#56B4E9",
+    ),
+    (
+        "hemispheric_closure",
+        0.0,
+        "Ct=1−Vd; no beam weighting",
+        "#0072B2",
+    ),
+)
+FINAL_FIELDS = (
+    ("redress_terrain_irradiance", "REDRESS: both changes", "#0072B2"),
     (
         "two_wall_raster_terrain_irradiance",
-        "Two-wall, raster F",
-        "#0072B2",
+        "Two-wall: same raster F",
+        "#009E73",
     ),
     (
         "two_wall_infinite_terrain_irradiance",
-        "Two-wall, infinite-wall F=sin²β",
-        "#009E73",
+        "Two-wall: infinite-wall F=sin²β",
+        "#CC79A7",
     ),
 )
 
@@ -79,10 +106,8 @@ def select_records(records):
             record["opposite_wall_snow_fraction"],
             OPPOSITE_WALL_SNOW_FRACTION,
         )
-        and record["terrain_configuration_method"]
-        == TERRAIN_CONFIGURATION_METHOD
     ]
-    expected = len(BANDS) * 3
+    expected = len(BANDS) * 3 * len(REDRESS_VARIANTS)
     if len(selected) != expected:
         raise ValueError(
             f"Expected {expected} selected records; found {len(selected)}"
@@ -91,10 +116,15 @@ def select_records(records):
 
 
 def record_lookup(records):
-    """Index records by Sentinel-2 band and valley-wall slope."""
+    """Index records by band, slope, Ct convention and beam weighting."""
 
     return {
-        (record["band"], record["wall_slope_degree"]): record
+        (
+            record["band"],
+            record["wall_slope_degree"],
+            record["terrain_configuration_method"],
+            record["neighbour_beam_weighting"],
+        ): record
         for record in records
     }
 
@@ -120,6 +150,34 @@ def grouped_bars(axis, x_position, records, fields):
     return maximum
 
 
+def redress_variant_bars(axis, x_position, lookup, band, slopes):
+    """Plot the full two-by-two REDRESS attribution experiment."""
+
+    width = 0.18
+    maximum = 0.0
+    for index, (method, weighting, label, color) in enumerate(
+        REDRESS_VARIANTS
+    ):
+        values = np.asarray([
+            lookup[(band, slope, method, weighting)][
+                "redress_terrain_irradiance"
+            ]
+            for slope in slopes
+        ])
+        maximum = max(maximum, float(np.nanmax(values)))
+        offset = (index - (len(REDRESS_VARIANTS) - 1) / 2.0) * width
+        axis.bar(
+            x_position + offset,
+            values,
+            width=width,
+            label=label,
+            color=color,
+            edgecolor="white",
+            linewidth=0.5,
+        )
+    return maximum
+
+
 def figure_caption():
     """Return a self-contained description of the analytical benchmark."""
 
@@ -128,12 +186,15 @@ def figure_caption():
         "SZA=45°. Wall A faces away from the Sun and wall B faces toward it. "
         "The upper row compares each wall’s own direct plus sky-diffuse "
         "irradiance before terrain exchange with the flat-neighbour "
-        "irradiance used by the REDRESS approximation. The lower row compares "
-        "REDRESS’s converged terrain-reflected irradiance on wall A with the "
-        "2×2 Lambertian solution. ‘Raster F’ uses the local DEM-derived "
-        "Ct=1−Vd and therefore isolates the neighbour-illumination assumption. "
-        "The infinite-wall reference uses F=sin²β. Atmospheric quantities "
-        "are interpolated from Py6S elevation nodes spaced by at most 250 m."
+        "irradiance used by the REDRESS approximation. The middle row crosses "
+        "the two Ct conventions with the neighbour beam-visibility weighting "
+        "enabled and disabled. The lower row compares the final REDRESS "
+        "variant (Ct=1−Vd without beam weighting) with the 2×2 Lambertian "
+        "solution. The raster-F reference uses the same local Ct, so its "
+        "remaining difference measures the flat-neighbour irradiance and "
+        "neighbourhood-aggregation approximations together. The infinite-wall "
+        "reference uses F=sin²β. Atmospheric quantities are interpolated from "
+        "Py6S elevation nodes spaced by at most 250 m."
     )
     return textwrap.fill(caption, width=205)
 
@@ -145,47 +206,69 @@ def plot_benchmark(records):
     slopes = sorted({record["wall_slope_degree"] for record in records})
     x_position = np.arange(len(slopes), dtype=np.float64)
     figure, axes = plt.subplots(
-        2,
+        3,
         len(BANDS),
-        figsize=(15.5, 8.8),
+        figsize=(15.5, 11.6),
         sharex="col",
         constrained_layout=False,
     )
 
     for column, band in enumerate(BANDS):
-        band_records = [lookup[(band, slope)] for slope in slopes]
+        final_records = [
+            lookup[(
+                band,
+                slope,
+                FINAL_CONFIGURATION_METHOD,
+                FINAL_NEIGHBOUR_BEAM_WEIGHTING,
+            )]
+            for slope in slopes
+        ]
         illumination_maximum = grouped_bars(
             axes[0, column],
             x_position,
-            band_records,
+            final_records,
             ILLUMINATION_FIELDS,
         )
-        terrain_maximum = grouped_bars(
+        variant_maximum = redress_variant_bars(
             axes[1, column],
             x_position,
-            band_records,
-            TERRAIN_FIELDS,
+            lookup,
+            band,
+            slopes,
+        )
+        final_maximum = grouped_bars(
+            axes[2, column],
+            x_position,
+            final_records,
+            FINAL_FIELDS,
         )
         axes[0, column].set_ylim(0.0, 1.15 * illumination_maximum)
-        axes[1, column].set_ylim(0.0, 1.15 * terrain_maximum)
+        axes[1, column].set_ylim(0.0, 1.15 * variant_maximum)
+        axes[2, column].set_ylim(0.0, 1.15 * final_maximum)
         axes[0, column].set_title(band, fontweight="bold")
-        axes[1, column].set_xticks(x_position)
-        axes[1, column].set_xticklabels(
+        axes[2, column].set_xticks(x_position)
+        axes[2, column].set_xticklabels(
             [f"β={slope:g}°" for slope in slopes]
         )
-        axes[1, column].set_xlabel("Symmetric valley-wall slope")
-        for row in range(2):
+        axes[2, column].set_xlabel("Symmetric valley-wall slope")
+        for row in range(3):
             axes[row, column].grid(axis="y", alpha=0.22)
             axes[row, column].spines[["top", "right"]].set_visible(False)
 
     axes[0, 0].set_ylabel("Pre-exchange irradiance\n(Py6S band units)")
-    axes[1, 0].set_ylabel("Terrain-reflected irradiance\n(Py6S band units)")
+    axes[1, 0].set_ylabel("REDRESS terrain irradiance\n(Py6S band units)")
+    axes[2, 0].set_ylabel("Final comparison\n(Py6S band units)")
     axes[0, 0].legend(
         loc="upper left",
         frameon=False,
         fontsize=8,
     )
     axes[1, 0].legend(
+        loc="upper left",
+        frameon=False,
+        fontsize=8,
+    )
+    axes[2, 0].legend(
         loc="upper left",
         frameon=False,
         fontsize=8,
@@ -200,7 +283,7 @@ def plot_benchmark(records):
         left=0.075,
         right=0.985,
         top=0.90,
-        bottom=0.20,
+        bottom=0.17,
         hspace=0.28,
         wspace=0.20,
     )

@@ -81,6 +81,7 @@ TERRAIN_CONFIGURATION_METHODS = (
     "hemispheric_closure",
     "dozier_frew",
 )
+NEIGHBOUR_BEAM_WEIGHTING_OPTIONS = (True, False)
 PRIMARY_TERRAIN_CONFIGURATION_METHOD = "hemispheric_closure"
 
 # Illustrative Lambertian snow-free alpine ground. Values are surface
@@ -498,6 +499,7 @@ def two_wall_benchmark_record(
     band_index,
     snow_fraction,
     terrain_configuration_method,
+    neighbour_beam_weighting,
     bhr,
     atmospheric_lookup,
     diagnostics,
@@ -577,6 +579,7 @@ def two_wall_benchmark_record(
         "wavelength_nm": model.meta["wavelengths"][band_index],
         "opposite_wall_snow_fraction": snow_fraction,
         "terrain_configuration_method": terrain_configuration_method,
+        "neighbour_beam_weighting": int(neighbour_beam_weighting),
         "reflectance_a": reflectance_a,
         "reflectance_b": reflectance_b,
         "incidence_a_degree": np.rad2deg(
@@ -621,6 +624,7 @@ def simulate_cover(
     terrain,
     opposite_wall_snow_fraction,
     terrain_configuration_method,
+    neighbour_beam_weighting,
     atmospheric_lookups,
 ):
     """Run full REDRESS for one opposite-wall material configuration."""
@@ -685,6 +689,9 @@ def simulate_cover(
             atmosphere_window_width_m=ATMOSPHERE_WINDOW_WIDTH_M,
             atmosphere_altitude_step_m=ATMOSPHERE_ALTITUDE_STEP_M,
             atmospheric_lookup=atmospheric_lookups[band],
+            weight_terrain_by_neighbour_beam_visibility=(
+                neighbour_beam_weighting
+            ),
         )
         (
             _,
@@ -705,6 +712,7 @@ def simulate_cover(
             index,
             opposite_wall_snow_fraction,
             terrain_configuration_method,
+            neighbour_beam_weighting,
             bhr,
             atmospheric_lookups[band],
             band_diagnostics,
@@ -747,6 +755,7 @@ def raster_output_dataset(
     model,
     opposite_wall_snow_fraction,
     terrain_configuration_method,
+    neighbour_beam_weighting,
     reflectance,
 ):
     """Package full TOA-reflectance rasters for one experiment."""
@@ -754,7 +763,8 @@ def raster_output_dataset(
     experiment = (
         f"{terrain.name}_wall_snow_"
         f"{opposite_wall_snow_fraction:.2f}_"
-        f"{terrain_configuration_method}"
+        f"{terrain_configuration_method}_"
+        f"beam_weight_{int(neighbour_beam_weighting)}"
     )
     dataset = xr.Dataset(
         {
@@ -781,6 +791,9 @@ def raster_output_dataset(
         terrain_configuration_method=(
             "experiment", [terrain_configuration_method]
         ),
+        neighbour_beam_weighting=(
+            "experiment", [neighbour_beam_weighting]
+        ),
     )
 
 
@@ -790,6 +803,7 @@ def sample_records(
     model,
     opposite_wall_snow_fraction,
     terrain_configuration_method,
+    neighbour_beam_weighting,
     reflectance,
     components,
     diagnostics,
@@ -811,6 +825,9 @@ def sample_records(
                 ),
                 "terrain_configuration_method": (
                     terrain_configuration_method
+                ),
+                "neighbour_beam_weighting": int(
+                    neighbour_beam_weighting
                 ),
                 "self_shadow_cosine_threshold": (
                     SELF_SHADOW_COSINE_THRESHOLD
@@ -988,40 +1005,45 @@ def main():
         )
         for snow_fraction in cover_fractions:
             for method in TERRAIN_CONFIGURATION_METHODS:
-                print(
-                    f"Running {terrain.label}; opposite-wall snow "
-                    f"fraction={snow_fraction:.2f}; Ct={method}"
-                )
-                (
-                    reflectance,
-                    components,
-                    diagnostics,
-                    benchmark_records,
-                ) = simulate_cover(
-                    model,
-                    terrain,
-                    snow_fraction,
-                    method,
-                    atmospheric_lookups,
-                )
-                two_wall_records.extend(benchmark_records)
-                raster_outputs.append(raster_output_dataset(
-                    terrain,
-                    model,
-                    snow_fraction,
-                    method,
-                    reflectance,
-                ))
-                records.extend(sample_records(
-                    terrain,
-                    dem,
-                    model,
-                    snow_fraction,
-                    method,
-                    reflectance,
-                    components,
-                    diagnostics,
-                ))
+                for beam_weighting in NEIGHBOUR_BEAM_WEIGHTING_OPTIONS:
+                    print(
+                        f"Running {terrain.label}; opposite-wall snow "
+                        f"fraction={snow_fraction:.2f}; Ct={method}; "
+                        f"beam weighting={beam_weighting}"
+                    )
+                    (
+                        reflectance,
+                        components,
+                        diagnostics,
+                        benchmark_records,
+                    ) = simulate_cover(
+                        model,
+                        terrain,
+                        snow_fraction,
+                        method,
+                        beam_weighting,
+                        atmospheric_lookups,
+                    )
+                    two_wall_records.extend(benchmark_records)
+                    raster_outputs.append(raster_output_dataset(
+                        terrain,
+                        model,
+                        snow_fraction,
+                        method,
+                        beam_weighting,
+                        reflectance,
+                    ))
+                    records.extend(sample_records(
+                        terrain,
+                        dem,
+                        model,
+                        snow_fraction,
+                        method,
+                        beam_weighting,
+                        reflectance,
+                        components,
+                        diagnostics,
+                    ))
 
     topography = xr.concat(
         topography_outputs,
@@ -1043,6 +1065,7 @@ def main():
         terrain_configuration_sensitivity_methods=(
             ", ".join(TERRAIN_CONFIGURATION_METHODS)
         ),
+        neighbour_beam_weighting_sensitivity="enabled and disabled",
     )
     rename_spatial_dimensions(topography).to_netcdf(TOPOGRAPHY_OUTPUT)
 
@@ -1060,6 +1083,7 @@ def main():
         primary_terrain_configuration_method=(
             PRIMARY_TERRAIN_CONFIGURATION_METHOD
         ),
+        neighbour_beam_weighting_sensitivity="enabled and disabled",
     )
     rename_spatial_dimensions(reflectance_maps).to_netcdf(
         REFLECTANCE_OUTPUT

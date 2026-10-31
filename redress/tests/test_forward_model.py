@@ -287,6 +287,49 @@ def test_surface_atmosphere_coupling_is_sky_view_masked(sky_view_factor):
     )
 
 
+def test_neighbour_beam_weighting_suppresses_complete_terrain_term():
+    angles, topography = _uniform_geometry(45.0)
+    shape = topography["altitude"].shape
+    topography["ct"] = (("x", "y"), np.full(shape, 0.4))
+    visibility = np.ones(shape)
+    visibility[:, :4] = 0.0
+    topography["all_shadows"] = (("x", "y"), visibility)
+    case = Cases()
+    case.create_cases(3)
+    terrain_irradiance = {}
+
+    for weighting in (True, False):
+        _, _, _, diagnostics = iterative_radiance(
+            topography,
+            angles,
+            wavelength=550.0,
+            hdr=np.full(shape, 0.5),
+            bhr=np.full(shape, 0.5),
+            rt_model=_CoupledAtmosphere,
+            rt_options={
+                "aerosol_model": "None",
+                "aod": 0.0,
+                "refl": 0.0,
+                "water": 0.0,
+                "ozone": 0.0,
+                "atmo_model": None,
+                "atcor": False,
+            },
+            brf=np.full(shape, 0.5),
+            case=case,
+            return_reflectance=True,
+            return_components=True,
+            return_diagnostics=True,
+            weight_terrain_by_neighbour_beam_visibility=weighting,
+            verbose=False,
+        )
+        terrain_irradiance[weighting] = diagnostics[
+            "terrain_reflected_irradiance"
+        ][4, 4]
+
+    assert terrain_irradiance[False] > terrain_irradiance[True]
+
+
 def test_local_incidence_cosine_scales_every_wavelength_equally():
     case = Cases()
     case.create_cases(2)

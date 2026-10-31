@@ -384,6 +384,7 @@ def iterative_radiance(
     atmosphere_window_width_m=DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M,
     atmosphere_altitude_step_m=None,
     atmospheric_lookup=None,
+    weight_terrain_by_neighbour_beam_visibility=True,
 ):
     """Iterative solver for TOA radiance.
 
@@ -577,16 +578,29 @@ def iterative_radiance(
             coupled_irradiance = 0.0
         EtP = EtP_flat + coupled_irradiance
 
-        # Mean direct-beam visibility of the terrain neighbourhood.
-        shad = bb_nbh
+        # The published REDRESS approximation multiplies the complete
+        # neighbour reflectance by its mean direct-beam visibility. Disabling
+        # this empirical weighting tests its effect independently of Ct.
+        if weight_terrain_by_neighbour_beam_visibility:
+            terrain_illumination_weight = bb_nbh
+        else:
+            terrain_illumination_weight = 1.0
 
         # Terrain contribution switch
         if case.terrain_contribution:
             # # Terrain re-illumination, eq. 18 substituted by eq. 11 from
             # # Sirguey et al. 2011
             # Terrain reflected irradiance
-            EtGP = EtP * (rt[:, :, i - 1] * shad * topo_bands["ct"]) / (
-                1 - rt[:, :, i - 1] * shad * ct_nbh)
+            EtGP = EtP * (
+                rt[:, :, i - 1]
+                * terrain_illumination_weight
+                * topo_bands["ct"]
+            ) / (
+                1
+                - rt[:, :, i - 1]
+                * terrain_illumination_weight
+                * ct_nbh
+            )
         else:
 
             EtGP = 0
@@ -673,7 +687,10 @@ def iterative_radiance(
             "total_diffuse_irradiance": EhP,
             "terrain_neighbour_reflectance": rt[:, :, -1],
             "environment_neighbour_reflectance": re[:, :, -1],
-            "terrain_neighbour_beam_visibility": shad,
+            "terrain_neighbour_beam_visibility": bb_nbh,
+            "terrain_neighbour_illumination_weight": (
+                terrain_illumination_weight
+            ),
             "terrain_neighbour_configuration_factor": ct_nbh,
         }
         diagnostics = {

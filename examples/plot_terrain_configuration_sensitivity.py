@@ -24,6 +24,7 @@ from plot_idealized_radiance_decomposition import (
 
 
 METHODS = ("hemispheric_closure", "dozier_frew")
+NEIGHBOUR_BEAM_WEIGHTING = 1.0
 METHOD_LABELS = {
     "hemispheric_closure": "Hemispheric closure: Ct = 1 − Vd",
     "dozier_frew": "Dozier–Frew: Ct = (1 + cos S)/2 − Vd",
@@ -55,6 +56,10 @@ def select_sensitivity_records(records):
             OPPOSITE_WALL_SNOW_FRACTION,
         )
         and record["terrain_configuration_method"] in METHODS
+        and record.get(
+            "neighbour_beam_weighting",
+            NEIGHBOUR_BEAM_WEIGHTING,
+        ) == NEIGHBOUR_BEAM_WEIGHTING
     ]
     if not selected:
         raise ValueError("No terrain-configuration sensitivity records found")
@@ -103,6 +108,8 @@ def figure_caption():
         "All-snow idealized-terrain experiments with full REDRESS case 5. "
         "Atmospheric quantities are interpolated from Py6S elevation nodes "
         "with a maximum spacing of 250 m. "
+        "The published neighbour beam-visibility weighting is active in both "
+        "configuration-factor experiments. "
         "The primary hemispheric convention treats sky and terrain as the "
         "complete outward hemisphere, Ct=1−Vd. The Dozier–Frew sensitivity "
         "omits the downslope fraction (1−cos S)/2. Black crosses in panel "
