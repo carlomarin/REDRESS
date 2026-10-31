@@ -637,8 +637,14 @@ class Model(object):
         pixel_resolution_m=DEFAULT_PIXEL_RESOLUTION_M,
         terrain_window_width_m=DEFAULT_TERRAIN_WINDOW_WIDTH_M,
         atmosphere_window_width_m=DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M,
+        atmosphere_altitude_step_m=None,
     ):
-        """Simulate TOA radiance using physically scaled neighbourhoods."""
+        """Simulate TOA radiance with physical spatial scales.
+
+        ``atmosphere_altitude_step_m`` activates a Py6S lookup over DEM
+        elevation. When omitted, the legacy scene-mean atmospheric altitude
+        is retained.
+        """
 
         self.toa_rad = xr.Dataset()
         self.toa_reflectance = xr.Dataset()
@@ -694,6 +700,7 @@ class Model(object):
                 pixel_resolution_m=pixel_resolution_m,
                 terrain_window_width_m=terrain_window_width_m,
                 atmosphere_window_width_m=atmosphere_window_width_m,
+                atmosphere_altitude_step_m=atmosphere_altitude_step_m,
             )
             (synthetic_toa_radiance,
              synthetic_toa_reflectance,

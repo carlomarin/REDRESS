@@ -101,6 +101,8 @@ def figure_caption():
 
     caption = (
         "All-snow idealized-terrain experiments with full REDRESS case 5. "
+        "Atmospheric quantities are interpolated from Py6S elevation nodes "
+        "with a maximum spacing of 250 m. "
         "The primary hemispheric convention treats sky and terrain as the "
         "complete outward hemisphere, Ct=1−Vd. The Dozier–Frew sensitivity "
         "omits the downslope fraction (1−cos S)/2. Black crosses in panel "

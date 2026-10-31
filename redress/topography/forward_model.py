@@ -124,6 +124,167 @@ def _solar_irradiance_density(outputs):
     return float(solar_irradiance)
 
 
+def _altitude_lookup_nodes(altitude_m, maximum_spacing_m):
+    """Return elevation nodes spanning a DEM with bounded spacing."""
+
+    altitude = np.asarray(altitude_m, dtype=np.float64)
+    finite = altitude[np.isfinite(altitude)]
+    if finite.size == 0:
+        raise ValueError("altitude grid contains no finite values")
+
+    if maximum_spacing_m is None:
+        return np.asarray([float(np.mean(finite))])
+    maximum_spacing_m = float(maximum_spacing_m)
+    if not np.isfinite(maximum_spacing_m) or maximum_spacing_m <= 0.0:
+        raise ValueError(
+            "atmosphere_altitude_step_m must be positive and finite"
+        )
+
+    minimum = float(np.min(finite))
+    maximum = float(np.max(finite))
+    if np.isclose(minimum, maximum):
+        return np.asarray([minimum])
+    intervals = int(np.ceil((maximum - minimum) / maximum_spacing_m))
+    return np.linspace(minimum, maximum, intervals + 1)
+
+
+def _atmospheric_output_values(outputs):
+    """Extract the 6S quantities required by the REDRESS equations."""
+
+    return {
+        "direct_solar_irradiance": float(
+            outputs.direct_solar_irradiance
+        ),
+        "diffuse_solar_irradiance": float(
+            outputs.diffuse_solar_irradiance
+        ),
+        "solar_irradiance": _solar_irradiance_density(outputs),
+        "spherical_albedo": float(outputs.spherical_albedo.total),
+        "atmospheric_intrinsic_radiance": float(
+            outputs.atmospheric_intrinsic_radiance
+        ),
+    }
+
+
+def _interpolate_atmospheric_values(
+    altitude_m,
+    altitude_nodes_m,
+    node_values,
+):
+    """Linearly interpolate scalar atmospheric outputs onto the DEM."""
+
+    altitude = np.asarray(altitude_m, dtype=np.float64)
+    nodes = np.asarray(altitude_nodes_m, dtype=np.float64)
+    values = np.asarray(node_values, dtype=np.float64)
+    if nodes.size == 1:
+        return np.where(np.isfinite(altitude), values[0], np.nan)
+    interpolated = np.interp(altitude.ravel(), nodes, values)
+    interpolated = interpolated.reshape(altitude.shape)
+    return np.where(np.isfinite(altitude), interpolated, np.nan)
+
+
+def _run_atmospheric_altitude_nodes(
+    rt_model,
+    angles,
+    rt_wavelength,
+    rt_options,
+    altitude_nodes_m,
+    inverse_geometry=False,
+):
+    """Run atmosphere-only 6S simulations at each elevation node."""
+
+    if inverse_geometry:
+        zenith = angles["VZA"].data.mean()
+        azimuth = angles["VAA"].data.mean()
+        view_zenith = angles["SZA"].data.mean()
+        view_azimuth = angles["SAA"].data.mean()
+    else:
+        zenith = angles["SZA"].data.mean()
+        azimuth = angles["SAA"].data.mean()
+        view_zenith = angles["VZA"].data.mean()
+        view_azimuth = angles["VAA"].data.mean()
+
+    values = []
+    for altitude_m in altitude_nodes_m:
+        rt_model.run(
+            zenith,
+            azimuth,
+            view_zenith,
+            view_azimuth,
+            rt_wavelength,
+            altitude_m,
+            rt_options["aerosol_model"],
+            aod=rt_options["aod"],
+            refl=0.0,
+            water=rt_options["water"],
+            ozone=rt_options["ozone"],
+            atmo=rt_options["atmo_model"],
+            atcor=rt_options["atcor"],
+            month=rt_options.get("month"),
+            day=rt_options.get("day"),
+        )
+        values.append(_atmospheric_output_values(rt_model.outputs))
+    return values
+
+
+def build_atmospheric_altitude_lookup(
+    topo_bands,
+    angles,
+    rt_wavelength,
+    rt_model,
+    rt_options,
+    atmosphere_altitude_step_m=None,
+):
+    """Interpolate 6S atmospheric quantities over DEM elevation.
+
+    Two atmosphere-only 6S calculations are made at every elevation node:
+    one for solar illumination and one with the illumination and viewing
+    geometries interchanged. A ``None`` spacing reproduces the legacy
+    scene-mean atmosphere. Supplying a spacing in metres activates the
+    elevation lookup.
+    """
+
+    altitude = np.asarray(topo_bands["altitude"].data, dtype=np.float64)
+    nodes = _altitude_lookup_nodes(altitude, atmosphere_altitude_step_m)
+    forward_nodes = _run_atmospheric_altitude_nodes(
+        rt_model,
+        angles,
+        rt_wavelength,
+        rt_options,
+        nodes,
+        inverse_geometry=False,
+    )
+    inverse_nodes = _run_atmospheric_altitude_nodes(
+        rt_model,
+        angles,
+        rt_wavelength,
+        rt_options,
+        nodes,
+        inverse_geometry=True,
+    )
+
+    fields = tuple(forward_nodes[0])
+    return {
+        "altitude_nodes_m": nodes,
+        "forward": {
+            field: _interpolate_atmospheric_values(
+                altitude,
+                nodes,
+                [values[field] for values in forward_nodes],
+            )
+            for field in fields
+        },
+        "inverse": {
+            field: _interpolate_atmospheric_values(
+                altitude,
+                nodes,
+                [values[field] for values in inverse_nodes],
+            )
+            for field in fields
+        },
+    }
+
+
 class Cases:
     """Terrain configuration class.
 
@@ -220,6 +381,8 @@ def iterative_radiance(
     pixel_resolution_m=DEFAULT_PIXEL_RESOLUTION_M,
     terrain_window_width_m=DEFAULT_TERRAIN_WINDOW_WIDTH_M,
     atmosphere_window_width_m=DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M,
+    atmosphere_altitude_step_m=None,
+    atmospheric_lookup=None,
 ):
     """Iterative solver for TOA radiance.
 
@@ -301,54 +464,31 @@ def iterative_radiance(
         rt_wavelength = wavelength
 
     # Request atmosphere-only quantities from 6S. REDRESS adds the explicit
-    # surface-atmosphere coupling and terrain contributions below.
-    rt_model.run(angles["SZA"].data.mean(),
-                 angles["SAA"].data.mean(),
-                 angles["VZA"].data.mean(),
-                 angles["VAA"].data.mean(),
-                 rt_wavelength,
-                 np.nanmean(topo_bands["altitude"].data),
-                 rt_options["aerosol_model"],
-                 aod=rt_options["aod"],
-                 refl=0.0,
-                 water=rt_options["water"],
-                 ozone=rt_options["ozone"],
-                 atmo=rt_options["atmo_model"],
-                 atcor=rt_options["atcor"],
-                 month=rt_options.get("month"),
-                 day=rt_options.get("day"),
-                 )
-
-    atmospheric_data = rt_model.outputs
-
-    rt_model.run(angles["VZA"].data.mean(),
-                 angles["VAA"].data.mean(),
-                 angles["SZA"].data.mean(),
-                 angles["SAA"].data.mean(),
-                 rt_wavelength,
-                 np.nanmean(topo_bands["altitude"].data),
-                 rt_options["aerosol_model"],
-                 aod=rt_options["aod"],
-                 refl=0.0,
-                 water=rt_options["water"],
-                 ozone=rt_options["ozone"],
-                 atmo=rt_options["atmo_model"],
-                 atcor=rt_options["atcor"],
-                 month=rt_options.get("month"),
-                 day=rt_options.get("day"),
-                 )
-    atmospheric_inv_data = rt_model.outputs
+    # surface-atmosphere coupling and terrain contributions below. When an
+    # elevation spacing is supplied, every quantity becomes a DEM-aligned
+    # field interpolated from a small set of 6S elevation nodes.
+    if atmospheric_lookup is None:
+        atmospheric_lookup = build_atmospheric_altitude_lookup(
+            topo_bands,
+            angles,
+            rt_wavelength,
+            rt_model,
+            rt_options,
+            atmosphere_altitude_step_m=atmosphere_altitude_step_m,
+        )
+    atmospheric_data = atmospheric_lookup["forward"]
+    atmospheric_inv_data = atmospheric_lookup["inverse"]
 
     # Get the variables of interest from the 6s run
     # Downward direct solar flux attenuated by the atmosphere
     # e_dir = mu_s * E_s * e{-tau/mu_s}
-    EdP_flat = atmospheric_data.direct_solar_irradiance
+    EdP_flat = atmospheric_data["direct_solar_irradiance"]
 
     # SOlar flux
-    Eo = _solar_irradiance_density(atmospheric_data)
+    Eo = atmospheric_data["solar_irradiance"]
 
     # For viewing direction
-    EdP_thetav = atmospheric_inv_data.direct_solar_irradiance
+    EdP_thetav = atmospheric_inv_data["direct_solar_irradiance"]
 
     # Direct atmospheric transmittance in illumination direction
     T_dir_dn = EdP_flat / (Eo * cos_sza)
@@ -357,18 +497,20 @@ def iterative_radiance(
     T_dir_up = EdP_thetav / (Eo * cos_vza)
 
     # Downward diffuse solar flux for a flat surface:
-    EhP_flat = atmospheric_data.diffuse_solar_irradiance
+    EhP_flat = atmospheric_data["diffuse_solar_irradiance"]
     # Downward diffuse solar flux for a flat surface: viewing direction
-    EhP_flat_thetav = atmospheric_inv_data.diffuse_solar_irradiance
+    EhP_flat_thetav = atmospheric_inv_data[
+        "diffuse_solar_irradiance"
+    ]
 
     # Total downward flux for a flat surface
     EtP_flat = EdP_flat + EhP_flat
 
     # Atmospheric spherical albedo
-    rs = atmospheric_data.spherical_albedo.total
+    rs = atmospheric_data["spherical_albedo"]
 
     # Atmospheric path radiance
-    LtA = atmospheric_data.atmospheric_intrinsic_radiance
+    LtA = atmospheric_data["atmospheric_intrinsic_radiance"]
 
     # Atmospheric diffuse transmittance. In viewing direction
     td = EhP_flat_thetav / (Eo * cos_vza)

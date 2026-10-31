@@ -23,7 +23,11 @@ import xarray as xr
 
 from redress.inputs.products import Dem, Model
 from redress.topography import dem_products
-from redress.topography.forward_model import Cases, iterative_radiance
+from redress.topography.forward_model import (
+    Cases,
+    build_atmospheric_altitude_lookup,
+    iterative_radiance,
+)
 from redress.topography.idealized import (
     circular_bowl,
     flat_plateau,
@@ -48,6 +52,7 @@ HORIZON_HALF_DIRECTIONS = 32  # Produces 64 azimuth directions.
 
 TERRAIN_WINDOW_WIDTH_M = 1500.0
 ATMOSPHERE_WINDOW_WIDTH_M = 2100.0
+ATMOSPHERE_ALTITUDE_STEP_M = 250.0
 REFERENCE_MEAN_ALTITUDE_M = 2500.0
 
 SOLAR_ZENITH_DEG = 45.0
@@ -418,11 +423,38 @@ def mixed_surface_optics(snow_value, snow_fraction, ground_reflectance):
     )
 
 
+def build_band_atmospheric_lookups(model, terrain):
+    """Cache elevation-dependent 6S fields for every simulated band."""
+
+    lookups = {}
+    for band, wavelength, definition in zip(
+        model.meta["bandlist"],
+        model.meta["wavelengths"],
+        model.meta["band_definitions"],
+    ):
+        print(f"Building atmospheric altitude lookup: {terrain.label}, {band}")
+        rt_wavelength = (
+            definition.py6s_filter
+            if definition is not None
+            else wavelength
+        )
+        lookups[band] = build_atmospheric_altitude_lookup(
+            topo_bands=model.topo_bands,
+            angles=model.angles,
+            rt_wavelength=rt_wavelength,
+            rt_model=model.rt_model(),
+            rt_options=model.rt_options,
+            atmosphere_altitude_step_m=ATMOSPHERE_ALTITUDE_STEP_M,
+        )
+    return lookups
+
+
 def simulate_cover(
     model,
     terrain,
     opposite_wall_snow_fraction,
     terrain_configuration_method,
+    atmospheric_lookups,
 ):
     """Run full REDRESS for one opposite-wall material configuration."""
 
@@ -481,6 +513,8 @@ def simulate_cover(
             pixel_resolution_m=PIXEL_RESOLUTION_M,
             terrain_window_width_m=TERRAIN_WINDOW_WIDTH_M,
             atmosphere_window_width_m=ATMOSPHERE_WINDOW_WIDTH_M,
+            atmosphere_altitude_step_m=ATMOSPHERE_ALTITUDE_STEP_M,
+            atmospheric_lookup=atmospheric_lookups[band],
         )
         _, band_reflectance, band_components = result
         reflectance.append(band_reflectance)
@@ -583,6 +617,9 @@ def sample_records(
                 ),
                 "self_shadow_cosine_threshold": (
                     SELF_SHADOW_COSINE_THRESHOLD
+                ),
+                "atmosphere_altitude_step_m": (
+                    ATMOSPHERE_ALTITUDE_STEP_M
                 ),
                 "band": band,
                 "wavelength_nm": model.meta["wavelengths"][band_index],
@@ -739,6 +776,9 @@ def main():
     for terrain in terrains:
         _, dem = terrain_products[terrain.name]
         model = configured_model(dem)
+        atmospheric_lookups = build_band_atmospheric_lookups(
+            model, terrain
+        )
         cover_fractions = (
             OPPOSITE_WALL_SNOW_FRACTIONS
             if np.any(terrain.opposite_wall_mask)
@@ -755,6 +795,7 @@ def main():
                     terrain,
                     snow_fraction,
                     method,
+                    atmospheric_lookups,
                 )
                 raster_outputs.append(raster_output_dataset(
                     terrain,
@@ -785,6 +826,7 @@ def main():
         horizon_directions=2 * HORIZON_HALF_DIRECTIONS,
         terrain_window_width_m=TERRAIN_WINDOW_WIDTH_M,
         atmosphere_window_width_m=ATMOSPHERE_WINDOW_WIDTH_M,
+        atmosphere_altitude_step_m=ATMOSPHERE_ALTITUDE_STEP_M,
         self_shadow_cosine_threshold=SELF_SHADOW_COSINE_THRESHOLD,
         primary_terrain_configuration_method=(
             PRIMARY_TERRAIN_CONFIGURATION_METHOD
@@ -805,6 +847,7 @@ def main():
         title="REDRESS TOA reflectance over analytical terrains",
         redress_case_number=REDRESS_CASE_NUMBER,
         ground_model="Lambertian linear snow-ground areal mixture",
+        atmosphere_altitude_step_m=ATMOSPHERE_ALTITUDE_STEP_M,
         primary_terrain_configuration_method=(
             PRIMARY_TERRAIN_CONFIGURATION_METHOD
         ),

@@ -13,6 +13,7 @@ from redress.topography.forward_model import (
     _anisotropic_sky_factor,
     _window_mean,
     _solar_irradiance_density,
+    build_atmospheric_altitude_lookup,
     iterative_radiance,
     window_size_from_distance,
 )
@@ -135,6 +136,27 @@ class _CoupledAtmosphere:
         )
 
 
+class _AltitudeDependentAtmosphere:
+    """Deterministic RT model used to test elevation interpolation."""
+
+    outputs = None
+    altitudes_m = []
+
+    @classmethod
+    def run(cls, sza, saa, vza, vaa, wavelength, altitude, aerosol, **kwargs):
+        del sza, saa, vza, vaa, wavelength, aerosol, kwargs
+        cls.altitudes_m.append(float(altitude))
+        cls.outputs = SimpleNamespace(
+            direct_solar_irradiance=500.0 + 0.05 * altitude,
+            diffuse_solar_irradiance=100.0 - 0.01 * altitude,
+            spherical_albedo=SimpleNamespace(
+                total=0.20 - 0.00001 * altitude
+            ),
+            atmospheric_intrinsic_radiance=20.0 - 0.005 * altitude,
+            values={"solar_spectrum": 1000.0},
+        )
+
+
 def _uniform_geometry(
     local_incidence_degree,
     shape=(9, 9),
@@ -158,6 +180,55 @@ def _uniform_geometry(
         "all_shadows": (("x", "y"), np.ones(shape)),
     })
     return angles, topography
+
+
+def test_atmospheric_lookup_interpolates_every_field_over_altitude():
+    angles, topography = _uniform_geometry(45.0, shape=(3, 3))
+    altitude = np.asarray([
+        [1000.0, 1125.0, 1250.0],
+        [1375.0, 1500.0, 1625.0],
+        [1750.0, 1875.0, 2000.0],
+    ])
+    topography["altitude"] = (("x", "y"), altitude)
+    _AltitudeDependentAtmosphere.altitudes_m = []
+
+    lookup = build_atmospheric_altitude_lookup(
+        topography,
+        angles,
+        rt_wavelength=550.0,
+        rt_model=_AltitudeDependentAtmosphere,
+        rt_options={
+            "aerosol_model": "None",
+            "aod": 0.0,
+            "water": 0.0,
+            "ozone": 0.0,
+            "atmo_model": None,
+            "atcor": False,
+            "month": None,
+            "day": None,
+        },
+        atmosphere_altitude_step_m=500.0,
+    )
+
+    np.testing.assert_allclose(
+        lookup["altitude_nodes_m"], [1000.0, 1500.0, 2000.0]
+    )
+    np.testing.assert_allclose(
+        lookup["forward"]["direct_solar_irradiance"],
+        500.0 + 0.05 * altitude,
+    )
+    np.testing.assert_allclose(
+        lookup["forward"]["atmospheric_intrinsic_radiance"],
+        20.0 - 0.005 * altitude,
+    )
+    assert _AltitudeDependentAtmosphere.altitudes_m == [
+        1000.0,
+        1500.0,
+        2000.0,
+        1000.0,
+        1500.0,
+        2000.0,
+    ]
 
 
 @pytest.mark.parametrize("sky_view_factor", (1.0, 0.35))

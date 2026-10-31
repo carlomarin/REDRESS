@@ -282,6 +282,8 @@ def figure_caption():
         "Full REDRESS case 5 over analytical DEMs; snow SSA=20 m² kg⁻¹, "
         "global SZA=45°, and the designated opposite wall is fully snow "
         "covered. Terrain configuration uses hemispheric closure, Ct=1−Vd. "
+        "Atmospheric quantities are linearly interpolated from Py6S runs "
+        "with a maximum elevation spacing of 250 m. "
         "Each radiance component is expressed on the TOA-reflectance "
         "scale as ρ_TOA L_component / ΣL_component, so each stack sums to the "
         "modelled TOA reflectance (open circle). ‘Diffuse surface’ includes "
