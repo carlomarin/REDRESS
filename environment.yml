@@ -1,0 +1,39 @@
+# Reproducible development environment for REDRESS on Ubuntu.
+# Create with:  mamba env create -f environment.yml
+# Activate with: conda activate redress
+
+name: redress
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.11
+  - pip
+
+  # Numerical and labelled-array processing
+  - numpy>=2,<3
+  - scipy>=1.11,<2
+  - xarray>=2024.1
+  - numba>=0.60
+  # The conda-forge Py6S package also supplies the compiled 6S executable.
+  - py6s=1.9.2
+
+  # Geospatial stack. Installing GDAL from conda-forge keeps its Python
+  # bindings and native GDAL library mutually compatible.
+  - gdal>=3.8
+  - pyproj>=3.6
+  - geojson>=3
+
+  # Xarray file backends and development tools
+  - netcdf4
+  - h5netcdf
+  - bottleneck
+  - matplotlib
+  - jupyterlab
+  - ipykernel
+  - pytest>=8
+
+  # Packages not currently distributed through conda-forge.
+  - pip:
+      - snowoptics==0.99.2

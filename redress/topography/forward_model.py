@@ -5,7 +5,284 @@ This file is part of the complex_terrain algorithm
 M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 """
 import numpy as np
-from astropy.convolution import convolve
+from scipy.ndimage import uniform_filter
+
+
+DEFAULT_TERRAIN_WINDOW_WIDTH_M = 1500.0
+DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M = 2100.0
+DEFAULT_PIXEL_RESOLUTION_M = 300.0
+
+
+def window_size_from_distance(window_width_m, pixel_resolution_m):
+    """Convert a physical moving-window width to an odd pixel count.
+
+    The returned window covers at least ``window_width_m`` and always has a
+    central pixel. At the original 300 m OLCI resolution, the REDRESS widths
+    of 1.5 and 2.1 km therefore reproduce the legacy 5- and 7-pixel windows.
+    At 20 m Sentinel-2 resolution, they become 75 and 105 pixels.
+    """
+
+    window_width_m = float(window_width_m)
+    pixel_resolution_m = float(pixel_resolution_m)
+    if not np.isfinite(window_width_m) or window_width_m <= 0:
+        raise ValueError("window_width_m must be a positive finite value")
+    if not np.isfinite(pixel_resolution_m) or pixel_resolution_m <= 0:
+        raise ValueError(
+            "pixel_resolution_m must be a positive finite value"
+        )
+
+    window_size = int(np.ceil(window_width_m / pixel_resolution_m))
+    if window_size % 2 == 0:
+        window_size += 1
+    return window_size
+
+
+def _validate_window_size(window_size, name):
+    """Validate an explicit moving-window size in pixels."""
+
+    if isinstance(window_size, bool) or int(window_size) != window_size:
+        raise ValueError(f"{name} must be an odd positive integer")
+    window_size = int(window_size)
+    if window_size <= 0 or window_size % 2 == 0:
+        raise ValueError(f"{name} must be an odd positive integer")
+    return window_size
+
+
+def _window_mean(values, window_size, boundary="nearest"):
+    """Calculate an efficient NaN-aware square moving-window mean."""
+
+    values = np.asarray(values, dtype=np.float64)
+    finite = np.isfinite(values)
+    filtered_values = uniform_filter(
+        np.where(finite, values, 0.0),
+        size=window_size,
+        mode=boundary,
+        cval=0.0,
+    )
+    filtered_weights = uniform_filter(
+        finite.astype(np.float64),
+        size=window_size,
+        mode=boundary,
+        cval=0.0,
+    )
+    return np.divide(
+        filtered_values,
+        filtered_weights,
+        out=np.full_like(filtered_values, np.nan),
+        where=filtered_weights > 0,
+    )
+
+
+def _anisotropic_sky_factor(
+    beam_visibility,
+    direct_transmittance,
+    cos_local_incidence,
+    cos_solar_zenith,
+    sky_view_factor,
+):
+    """Return the Hay anisotropic diffuse-sky scaling factor.
+
+    The circumsolar component follows the local incidence angle. The
+    remaining isotropic component is reduced by the fraction of sky visible
+    from the pixel. ``beam_visibility`` ranges from one for a fully
+    illuminated pixel to zero for a fully shaded pixel.
+    """
+
+    anisotropy_index = beam_visibility * direct_transmittance
+    circumsolar = anisotropy_index * (
+        cos_local_incidence / cos_solar_zenith
+    )
+    isotropic = (1 - anisotropy_index) * sky_view_factor
+    return circumsolar + isotropic
+
+
+def _solar_irradiance_density(outputs):
+    """Return Py6S extraterrestrial solar irradiance in W m-2 um-1.
+
+    Monochromatic 6S runs expose ``solar_spectrum`` directly. Filtered sensor
+    runs instead expose the solar-spectrum integral and the filter integral;
+    their ratio is the response-weighted irradiance density.
+    """
+
+    values = outputs.values
+    if "solar_spectrum" in values:
+        solar_irradiance = values["solar_spectrum"]
+    elif {"int_solar_spectrum", "int_funct_filt"} <= values.keys():
+        filter_integral = values["int_funct_filt"]
+        if filter_integral <= 0:
+            raise ValueError("Py6S returned a non-positive filter integral")
+        solar_irradiance = values["int_solar_spectrum"] / filter_integral
+    else:
+        available = ", ".join(sorted(values))
+        raise ValueError(
+            "Py6S did not return the solar irradiance required by REDRESS. "
+            f"Available outputs: {available}"
+        )
+
+    if not np.isfinite(solar_irradiance) or solar_irradiance <= 0:
+        raise ValueError("Py6S returned invalid extraterrestrial irradiance")
+    return float(solar_irradiance)
+
+
+def _altitude_lookup_nodes(altitude_m, maximum_spacing_m):
+    """Return elevation nodes spanning a DEM with bounded spacing."""
+
+    altitude = np.asarray(altitude_m, dtype=np.float64)
+    finite = altitude[np.isfinite(altitude)]
+    if finite.size == 0:
+        raise ValueError("altitude grid contains no finite values")
+
+    if maximum_spacing_m is None:
+        return np.asarray([float(np.mean(finite))])
+    maximum_spacing_m = float(maximum_spacing_m)
+    if not np.isfinite(maximum_spacing_m) or maximum_spacing_m <= 0.0:
+        raise ValueError(
+            "atmosphere_altitude_step_m must be positive and finite"
+        )
+
+    minimum = float(np.min(finite))
+    maximum = float(np.max(finite))
+    if np.isclose(minimum, maximum):
+        return np.asarray([minimum])
+    intervals = int(np.ceil((maximum - minimum) / maximum_spacing_m))
+    return np.linspace(minimum, maximum, intervals + 1)
+
+
+def _atmospheric_output_values(outputs):
+    """Extract the 6S quantities required by the REDRESS equations."""
+
+    return {
+        "direct_solar_irradiance": float(
+            outputs.direct_solar_irradiance
+        ),
+        "diffuse_solar_irradiance": float(
+            outputs.diffuse_solar_irradiance
+        ),
+        "solar_irradiance": _solar_irradiance_density(outputs),
+        "spherical_albedo": float(outputs.spherical_albedo.total),
+        "atmospheric_intrinsic_radiance": float(
+            outputs.atmospheric_intrinsic_radiance
+        ),
+    }
+
+
+def _interpolate_atmospheric_values(
+    altitude_m,
+    altitude_nodes_m,
+    node_values,
+):
+    """Linearly interpolate scalar atmospheric outputs onto the DEM."""
+
+    altitude = np.asarray(altitude_m, dtype=np.float64)
+    nodes = np.asarray(altitude_nodes_m, dtype=np.float64)
+    values = np.asarray(node_values, dtype=np.float64)
+    if nodes.size == 1:
+        return np.where(np.isfinite(altitude), values[0], np.nan)
+    interpolated = np.interp(altitude.ravel(), nodes, values)
+    interpolated = interpolated.reshape(altitude.shape)
+    return np.where(np.isfinite(altitude), interpolated, np.nan)
+
+
+def _run_atmospheric_altitude_nodes(
+    rt_model,
+    angles,
+    rt_wavelength,
+    rt_options,
+    altitude_nodes_m,
+    inverse_geometry=False,
+):
+    """Run atmosphere-only 6S simulations at each elevation node."""
+
+    if inverse_geometry:
+        zenith = angles["VZA"].data.mean()
+        azimuth = angles["VAA"].data.mean()
+        view_zenith = angles["SZA"].data.mean()
+        view_azimuth = angles["SAA"].data.mean()
+    else:
+        zenith = angles["SZA"].data.mean()
+        azimuth = angles["SAA"].data.mean()
+        view_zenith = angles["VZA"].data.mean()
+        view_azimuth = angles["VAA"].data.mean()
+
+    values = []
+    for altitude_m in altitude_nodes_m:
+        rt_model.run(
+            zenith,
+            azimuth,
+            view_zenith,
+            view_azimuth,
+            rt_wavelength,
+            altitude_m,
+            rt_options["aerosol_model"],
+            aod=rt_options["aod"],
+            refl=0.0,
+            water=rt_options["water"],
+            ozone=rt_options["ozone"],
+            atmo=rt_options["atmo_model"],
+            atcor=rt_options["atcor"],
+            month=rt_options.get("month"),
+            day=rt_options.get("day"),
+        )
+        values.append(_atmospheric_output_values(rt_model.outputs))
+    return values
+
+
+def build_atmospheric_altitude_lookup(
+    topo_bands,
+    angles,
+    rt_wavelength,
+    rt_model,
+    rt_options,
+    atmosphere_altitude_step_m=None,
+):
+    """Interpolate 6S atmospheric quantities over DEM elevation.
+
+    Two atmosphere-only 6S calculations are made at every elevation node:
+    one for solar illumination and one with the illumination and viewing
+    geometries interchanged. A ``None`` spacing reproduces the legacy
+    scene-mean atmosphere. Supplying a spacing in metres activates the
+    elevation lookup.
+    """
+
+    altitude = np.asarray(topo_bands["altitude"].data, dtype=np.float64)
+    nodes = _altitude_lookup_nodes(altitude, atmosphere_altitude_step_m)
+    forward_nodes = _run_atmospheric_altitude_nodes(
+        rt_model,
+        angles,
+        rt_wavelength,
+        rt_options,
+        nodes,
+        inverse_geometry=False,
+    )
+    inverse_nodes = _run_atmospheric_altitude_nodes(
+        rt_model,
+        angles,
+        rt_wavelength,
+        rt_options,
+        nodes,
+        inverse_geometry=True,
+    )
+
+    fields = tuple(forward_nodes[0])
+    return {
+        "altitude_nodes_m": nodes,
+        "forward": {
+            field: _interpolate_atmospheric_values(
+                altitude,
+                nodes,
+                [values[field] for values in forward_nodes],
+            )
+            for field in fields
+        },
+        "inverse": {
+            field: _interpolate_atmospheric_values(
+                altitude,
+                nodes,
+                [values[field] for values in inverse_nodes],
+            )
+            for field in fields
+        },
+    }
 
 
 class Cases:
@@ -93,16 +370,41 @@ def iterative_radiance(
     rt_options,
     brf,
     case,
-    tw=5,
-    aw=7,
+    tw=None,
+    aw=None,
     dif_anis=False,
+    rt_wavelength=None,
+    return_reflectance=False,
+    return_components=False,
+    return_diagnostics=False,
+    max_iterations=100,
+    verbose=True,
+    pixel_resolution_m=DEFAULT_PIXEL_RESOLUTION_M,
+    terrain_window_width_m=DEFAULT_TERRAIN_WINDOW_WIDTH_M,
+    atmosphere_window_width_m=DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M,
+    atmosphere_altitude_step_m=None,
+    atmospheric_lookup=None,
+    weight_terrain_by_neighbour_beam_visibility=True,
 ):
-    """Iterative solver for TOA radiance
+    """Iterative solver for TOA radiance.
+
+    Neighbourhood windows are derived from their physical widths and the
+    raster resolution. The ``tw`` and ``aw`` arguments remain available as
+    explicit pixel-count overrides for reproducing earlier calculations.
     """
 
-    # Build averaging windows used in convolution
-    terrain_window = np.full((tw, tw), 1 / tw ** 2)  # Reflected terrain
-    atmosphere_window = np.full((aw, aw), 1 / aw ** 2)  # Reflected atmosphere
+    if tw is None:
+        tw = window_size_from_distance(
+            terrain_window_width_m, pixel_resolution_m
+        )
+    else:
+        tw = _validate_window_size(tw, "tw")
+    if aw is None:
+        aw = window_size_from_distance(
+            atmosphere_window_width_m, pixel_resolution_m
+        )
+    else:
+        aw = _validate_window_size(aw, "aw")
 
     # Calculate the cosine of the SZA and effective SZA
     cos_sza = np.cos(angles["SZA"].data)
@@ -114,23 +416,30 @@ def iterative_radiance(
     cos_vza = np.cos(angles["VZA"].data)
     cos_vza_eff = np.cos(topo_bands["eff_vza"].data)
 
-    # Calculate the pixels viewed by the satellite (not hidden)
-    view_ground = np.where(cos_vza_eff <= 0, 0, cos_vza_eff)
-    # Set - values to 0
-    view_ground = np.where(view_ground > 0, 1, view_ground)  # >0 = 1
+    # Use the DEM horizon line-of-sight product when available. Synthetic
+    # scenes without a horizon retain the local front-facing approximation.
+    if "view_ground" in topo_bands:
+        view_ground = topo_bands["view_ground"].data
+    else:
+        view_ground = (cos_vza_eff > 0).astype(np.float64)
 
     # Use convolution to obtain the mean terrain configuration factor
-    ct_nbh = convolve(topo_bands["ct"].data, terrain_window,
-                      boundary="fill", fill_value=np.nan)
+    ct_nbh = _window_mean(
+        topo_bands["ct"].data, tw, boundary="constant"
+    )
     # Shadows, in this product bb = 0 if a shadow, 1 if no shadow
-    bb = topo_bands["all_shadows"]
+    if "beam_visibility" in topo_bands:
+        bb = topo_bands["beam_visibility"]
+    else:
+        bb = topo_bands["all_shadows"]
 
     # Shadows in the neighborhood
-    bb_nbh = convolve(bb, terrain_window, boundary="fill", fill_value=np.nan)
+    bb_nbh = _window_mean(bb, tw, boundary="constant")
 
     # Run the iterative reflectance for all bands
-    print("Running complex terrain reflectance calculation"
-          " for band: %s nm" % wavelength)
+    if verbose:
+        print("Running complex terrain reflectance calculation"
+              " for band: %s nm" % wavelength)
 
     # Initialise environmental reflectance, terrain reflected irradiance
     # iterative reflectance, and iterative radiance.
@@ -139,10 +448,10 @@ def iterative_radiance(
     # environmental and terrain reflectance.
     # The environemental reflectance is averaged over 3X3 pixels (diam =
     # 900 m) and terrain reflectance over 7x7 pixels (diam = 2.1 km)
-    re = convolve(bhr, atmosphere_window, boundary="extend",)
+    re = _window_mean(bhr, aw, boundary="nearest")
     re = np.expand_dims(re, axis=2)
 
-    rt = convolve(bhr, terrain_window, boundary="extend",)
+    rt = _window_mean(bhr, tw, boundary="nearest")
     rt = np.expand_dims(rt, axis=2)
 
     r = np.zeros_like(bhr)
@@ -151,50 +460,37 @@ def iterative_radiance(
     l_toa = np.zeros_like(bhr)
     l_toa = np.expand_dims(l_toa, axis=2)
 
-    # Call the radiative transfer class
-    rt_model.run(angles["SZA"].data.mean(),
-                 angles["SAA"].data.mean(),
-                 angles["VZA"].data.mean(),
-                 angles["VAA"].data.mean(),
-                 wavelength,
-                 np.nanmean(topo_bands["altitude"].data),
-                 rt_options["aerosol_model"],
-                 aod=rt_options["aod"],
-                 refl=bhr.mean(),
-                 water=rt_options["water"],
-                 ozone=rt_options["ozone"],
-                 atmo=rt_options["atmo_model"],
-                 atcor=rt_options["atcor"],
-                 )
+    # The scalar wavelength is used for diagnostics and backward
+    # compatibility. A sensor response can be supplied separately for Py6S.
+    if rt_wavelength is None:
+        rt_wavelength = wavelength
 
-    atmospheric_data = rt_model.outputs
-
-    rt_model.run(angles["VZA"].data.mean(),
-                 angles["VAA"].data.mean(),
-                 angles["SZA"].data.mean(),
-                 angles["SAA"].data.mean(),
-                 wavelength,
-                 np.nanmean(topo_bands["altitude"].data),
-                 rt_options["aerosol_model"],
-                 aod=rt_options["aod"],
-                 refl=bhr.mean(),
-                 water=rt_options["water"],
-                 ozone=rt_options["ozone"],
-                 atmo=rt_options["atmo_model"],
-                 atcor=rt_options["atcor"],
-                 )
-    atmospheric_inv_data = rt_model.outputs
+    # Request atmosphere-only quantities from 6S. REDRESS adds the explicit
+    # surface-atmosphere coupling and terrain contributions below. When an
+    # elevation spacing is supplied, every quantity becomes a DEM-aligned
+    # field interpolated from a small set of 6S elevation nodes.
+    if atmospheric_lookup is None:
+        atmospheric_lookup = build_atmospheric_altitude_lookup(
+            topo_bands,
+            angles,
+            rt_wavelength,
+            rt_model,
+            rt_options,
+            atmosphere_altitude_step_m=atmosphere_altitude_step_m,
+        )
+    atmospheric_data = atmospheric_lookup["forward"]
+    atmospheric_inv_data = atmospheric_lookup["inverse"]
 
     # Get the variables of interest from the 6s run
     # Downward direct solar flux attenuated by the atmosphere
     # e_dir = mu_s * E_s * e{-tau/mu_s}
-    EdP_flat = atmospheric_data.direct_solar_irradiance
+    EdP_flat = atmospheric_data["direct_solar_irradiance"]
 
     # SOlar flux
-    Eo = atmospheric_data.solar_spectrum
+    Eo = atmospheric_data["solar_irradiance"]
 
     # For viewing direction
-    EdP_thetav = atmospheric_inv_data.direct_solar_irradiance
+    EdP_thetav = atmospheric_inv_data["direct_solar_irradiance"]
 
     # Direct atmospheric transmittance in illumination direction
     T_dir_dn = EdP_flat / (Eo * cos_sza)
@@ -203,18 +499,20 @@ def iterative_radiance(
     T_dir_up = EdP_thetav / (Eo * cos_vza)
 
     # Downward diffuse solar flux for a flat surface:
-    EhP_flat = atmospheric_data.diffuse_solar_irradiance
+    EhP_flat = atmospheric_data["diffuse_solar_irradiance"]
     # Downward diffuse solar flux for a flat surface: viewing direction
-    EhP_flat_thetav = atmospheric_inv_data.diffuse_solar_irradiance
+    EhP_flat_thetav = atmospheric_inv_data[
+        "diffuse_solar_irradiance"
+    ]
 
     # Total downward flux for a flat surface
     EtP_flat = EdP_flat + EhP_flat
 
     # Atmospheric spherical albedo
-    rs = atmospheric_data.spherical_albedo.total
+    rs = atmospheric_data["spherical_albedo"]
 
     # Atmospheric path radiance
-    LtA = atmospheric_data.atmospheric_intrinsic_radiance
+    LtA = atmospheric_data["atmospheric_intrinsic_radiance"]
 
     # Atmospheric diffuse transmittance. In viewing direction
     td = EhP_flat_thetav / (Eo * cos_vza)
@@ -239,8 +537,13 @@ def iterative_radiance(
         else:
             # Account for anisotropy of diffuse irradiance at grazing
             # angles, eq. 16
-            vd = bb * T_dir_dn * (cos_sza_eff / cos_sza) + (
-                1 - bb * T_dir_dn * topo_bands["vt"])
+            vd = _anisotropic_sky_factor(
+                beam_visibility=bb,
+                direct_transmittance=T_dir_dn,
+                cos_local_incidence=cos_sza_eff,
+                cos_solar_zenith=cos_sza,
+                sky_view_factor=topo_bands["vt"],
+            )
 
     # Contribution of the neighbouring slopes to the satellite signal
     # Set to zero (modified in iteration for full run)
@@ -256,9 +559,10 @@ def iterative_radiance(
     l_difference = 1
     i = 1
 
-    while l_difference > 1e-3:
+    while l_difference > 1e-3 and i <= max_iterations:
 
-        print("Iteration number: %s" % i)
+        if verbose:
+            print("Iteration number: %s" % i)
 
         #  Atmospheric contribution to the pixel (multple reflections),
         #  eq. 20
@@ -269,29 +573,42 @@ def iterative_radiance(
 
         # Atmospheric coupling switch
         if case.atm_coupl:
-            EtP = EtP_flat + EtGAP
+            coupled_irradiance = EtGAP
         else:
-            EtP = EtP_flat
+            coupled_irradiance = 0.0
+        EtP = EtP_flat + coupled_irradiance
+
+        # The published REDRESS approximation multiplies the complete
+        # neighbour reflectance by its mean direct-beam visibility. Disabling
+        # this empirical weighting tests its effect independently of Ct.
+        if weight_terrain_by_neighbour_beam_visibility:
+            terrain_illumination_weight = bb_nbh
+        else:
+            terrain_illumination_weight = 1.0
 
         # Terrain contribution switch
         if case.terrain_contribution:
-
-            # Add shadow off option in eq. 18
-            shad = bb_nbh  # Disable reillumination from shadows
-
             # # Terrain re-illumination, eq. 18 substituted by eq. 11 from
             # # Sirguey et al. 2011
             # Terrain reflected irradiance
-            EtGP = EtP * (rt[:, :, i - 1] * shad * topo_bands["ct"]) / (
-                1 - rt[:, :, i - 1] * shad * ct_nbh)
+            EtGP = EtP * (
+                rt[:, :, i - 1]
+                * terrain_illumination_weight
+                * topo_bands["ct"]
+            ) / (
+                1
+                - rt[:, :, i - 1]
+                * terrain_illumination_weight
+                * ct_nbh
+            )
         else:
 
             EtGP = 0
 
-        # Combine parts of the total diffuse irradiance incoming at the
-        # surface of the pixel, built from eq. 3 (rewritten based on grey
-        # recaps)
-        EhP = EhP_flat * vd + EtGP
+        # The coupled downwelling field reaches the pixel through the visible
+        # sky and is therefore masked like atmospheric diffuse irradiance.
+        # This extends Eq. 9 of Lamare et al. (2020), where EtGAP is unmasked.
+        EhP = (EhP_flat + coupled_irradiance) * vd + EtGP
 
         # If considering the neighbouring slopes contributions directly to
         # the satellite signal, "l_dif_dir" and "l_dif_ref_coupl_dif"
@@ -301,8 +618,8 @@ def iterative_radiance(
             LtNA = (td * re[:, :, i - 1] *
                     (EdP_flat + EhP_flat + EtGAP)) / np.pi
 
-        # Diffuse radiation reflected by pixel to the satellite sensor
-        # Eq. 4
+        # Diffuse radiation reflected by the pixel toward the sensor, Eq. 5.
+        # By reciprocity, hdr is the direct albedo evaluated at eff_vza.
         LhP = view_ground * (hdr / np.pi) * EhP * T_dir_up
 
         # TOA radiance (equation 1)
@@ -321,9 +638,9 @@ def iterative_radiance(
         r = np.dstack((r, r_currentstep))
 
         # Apply the averaging of the updated reflectance
-        re_i = convolve(r[:, :, i], atmosphere_window, boundary="extend")
+        re_i = _window_mean(r[:, :, i], aw, boundary="nearest")
         re = np.dstack((re, re_i))
-        rt_i = convolve(r[:, :, i], terrain_window, boundary="extend")
+        rt_i = _window_mean(r[:, :, i], tw, boundary="nearest")
         rt = np.dstack((rt, rt_i))
 
         # Update the radiance stack
@@ -333,10 +650,81 @@ def iterative_radiance(
         l_difference = np.abs(
             np.nanmean(l_toa[2:-2, 2:-2, i] - l_toa[2:-2, 2:-2, i - 1])
         )
-        print(
-            "radiance difference with previous"
-            " iteration = %s" % l_difference
-        )
+        if verbose:
+            print(
+                "radiance difference with previous"
+                " iteration = %s" % l_difference
+            )
         i += 1
 
-    return l_toa[:, :, -1]
+    if l_difference > 1e-3:
+        raise RuntimeError(
+            f"Terrain radiance did not converge after {max_iterations} "
+            "iterations"
+        )
+
+    toa_radiance = l_toa[:, :, -1]
+    components = {
+        "direct_surface": LdP,
+        "diffuse_surface": LhP,
+        "neighbour_atmosphere": LtNA,
+        "atmospheric_path": LtA,
+    }
+    components = {
+        name: np.broadcast_to(
+            np.asarray(value, dtype=np.float64), toa_radiance.shape
+        ).copy()
+        for name, value in components.items()
+    }
+    diagnostics = None
+    if return_diagnostics:
+        diagnostics = {
+            "direct_irradiance": EdP,
+            "flat_direct_irradiance": EdP_flat,
+            "flat_diffuse_irradiance": EhP_flat,
+            "coupled_irradiance": coupled_irradiance,
+            "terrain_reflected_irradiance": EtGP,
+            "total_diffuse_irradiance": EhP,
+            "terrain_neighbour_reflectance": rt[:, :, -1],
+            "environment_neighbour_reflectance": re[:, :, -1],
+            "terrain_neighbour_beam_visibility": bb_nbh,
+            "terrain_neighbour_illumination_weight": (
+                terrain_illumination_weight
+            ),
+            "terrain_neighbour_configuration_factor": ct_nbh,
+        }
+        diagnostics = {
+            name: np.broadcast_to(
+                np.asarray(value, dtype=np.float64), toa_radiance.shape
+            ).copy()
+            for name, value in diagnostics.items()
+        }
+    if not return_reflectance:
+        if return_components and return_diagnostics:
+            return toa_radiance, components, diagnostics
+        if return_components:
+            return toa_radiance, components
+        if return_diagnostics:
+            return toa_radiance, diagnostics
+        return toa_radiance
+
+    reflectance_denominator = Eo * cos_sza
+    toa_reflectance = np.divide(
+        np.pi * toa_radiance,
+        reflectance_denominator,
+        out=np.full_like(toa_radiance, np.nan, dtype=np.float64),
+        where=reflectance_denominator > 0,
+    )
+    if return_components:
+        if return_diagnostics:
+            return (
+                toa_radiance,
+                toa_reflectance,
+                components,
+                diagnostics,
+            )
+        return toa_radiance, toa_reflectance, components
+    if return_diagnostics:
+        return toa_radiance, toa_reflectance, diagnostics
+    return toa_radiance, toa_reflectance
+

@@ -4,8 +4,48 @@
 This file is part of the complex_terrain algorithm
 M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 """
+from collections.abc import Mapping
+
 import numpy as np
 import Py6S as ps
+
+
+def _aerosol_profile(aerosol):
+    """Build a predefined or four-component Py6S aerosol profile."""
+
+    predefined = {
+        "Continental": ps.AeroProfile.Continental,
+        "BiomassBurning": ps.AeroProfile.BiomassBurning,
+        "Desert": ps.AeroProfile.Desert,
+        "Maritime": ps.AeroProfile.Maritime,
+        "Stratospheric": ps.AeroProfile.Stratospheric,
+        "Urban": ps.AeroProfile.Urban,
+        "None": ps.AeroProfile.NoAerosols,
+    }
+    if isinstance(aerosol, str):
+        try:
+            return ps.AeroProfile.PredefinedType(predefined[aerosol])
+        except KeyError as error:
+            valid = ", ".join(predefined)
+            raise ValueError(
+                f"Unknown aerosol profile {aerosol!r}. Valid profiles: {valid}."
+            ) from error
+
+    if isinstance(aerosol, Mapping):
+        components = {name: float(value) for name, value in aerosol.items()}
+        valid_components = {"dust", "water", "oceanic", "soot"}
+        unexpected = set(components).difference(valid_components)
+        if unexpected:
+            raise ValueError(
+                "Unknown aerosol components: " + ", ".join(sorted(unexpected))
+            )
+        if not np.isclose(sum(components.values()), 1.0, atol=1e-8):
+            raise ValueError("aerosol component fractions must sum to one")
+        if any(value < 0.0 for value in components.values()):
+            raise ValueError("aerosol component fractions cannot be negative")
+        return ps.AeroProfile.User(**components)
+
+    raise TypeError("aero must be a profile name or component mapping")
 
 
 class rtmodel(object):
@@ -14,32 +54,18 @@ class rtmodel(object):
     def __init__(self):
         self.outputs = None
 
-    def run(self, sza, saa, vza, vaa, wvl, alt, aero,
+    def run(self, sza, saa, vza, vaa, wavelength, alt, aero,
             aod=0.1, refl=0.99, water=0.05, ozone=0.30, atmo=None, atcor=False,
+            month=None, day=None,
             ):
-        """ Run PY6S
-        date = datetime object specifying the day and month of acquisition
-        lat = latitude of point considered (in degrees)
-        sza, saa, vza, vaa = viewing angles input in radians
-        wvl = wavelength in namometers
-        alt_km =
-        profile has to be one of the following:
-            """
+        """Run Py6S for one wavelength or one spectral response.
 
-        # Convert nanometer input into um for the model
-        wvl_um = wvl / 1000
+        ``wavelength`` may be a scalar wavelength in nanometers or a Py6S
+        predefined wavelength tuple. Angles are expressed in radians and
+        altitude in meters.
+        """
+
         alt_km = alt / 1000
-
-        # Build aero profiles
-        aero_profiles = {
-            "Continental": ps.AeroProfile.Continental,
-            "BiomassBurning": ps.AeroProfile.BiomassBurning,
-            "Desert": ps.AeroProfile.Desert,
-            "Maritime": ps.AeroProfile.Maritime,
-            "Stratospheric": ps.AeroProfile.Stratospheric,
-            "Urban": ps.AeroProfile.Urban,
-            "None": ps.AeroProfile.NoAerosols,
-        }
 
         # Generate a 6S class
         s = ps.SixS()
@@ -53,15 +79,27 @@ class rtmodel(object):
         s.geometry.solar_a = np.rad2deg(saa)
         s.geometry.view_a = np.rad2deg(vaa)
 
-        # s.geometry.day = date.day
-        # s.geometry.month = date.month
+        if (month is None) != (day is None):
+            raise ValueError("month and day must be provided together")
+        if month is not None:
+            s.geometry.month = int(month)
+            s.geometry.day = int(day)
 
         # Set altitudes
         s.altitudes = ps.Altitudes()
         s.altitudes.set_target_custom_altitude(alt_km)
         s.altitudes.set_sensor_satellite_level()
 
-        s.wavelength = ps.Wavelength(wvl_um)  # Set wavelength in um
+        if np.isscalar(wavelength):
+            s.wavelength = ps.Wavelength(float(wavelength) / 1000.0)
+        else:
+            try:
+                s.wavelength = ps.Wavelength(wavelength)
+            except (TypeError, ValueError, IndexError) as error:
+                raise TypeError(
+                    "wavelength must be a scalar value in nanometers or a "
+                    "Py6S predefined wavelength tuple"
+                ) from error
 
         # Atmosphere parameters
         if atmo is None:
@@ -85,7 +123,7 @@ class rtmodel(object):
                 atmo_profiles[atmo])
 
         # Aerosol parameters
-        s.aero_profile = ps.AeroProfile.PredefinedType(aero_profiles[aero])
+        s.aero_profile = _aerosol_profile(aero)
 
         s.aot550 = aod
 
@@ -101,3 +139,4 @@ class rtmodel(object):
         s.run()  # Run Py6S
 
         self.outputs = s.outputs
+

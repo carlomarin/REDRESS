@@ -8,7 +8,15 @@ M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 from .satellites import import_reader
 
 
-def import_DEM_gtiff(inpath, extent, epsg=None, reader=None):
+def import_DEM_gtiff(
+    inpath,
+    extent,
+    epsg=None,
+    reader=None,
+    resolution=None,
+    horizon_buffer_m=0.0,
+    extent_epsg=4326,
+):
     """Import a single band DEM.
 
     Import a DEM product using a specified reader.
@@ -31,6 +39,14 @@ def import_DEM_gtiff(inpath, extent, epsg=None, reader=None):
         raise ValueError("Please specify a valid reader.")
 
     # Open the image with the reader and import data to a class
-    dem_prod = dem_reader.dem_generic(inpath, extent, epsg,)
+    dem_prod = dem_reader.dem_generic(
+        inpath,
+        extent,
+        epsg,
+        resolution=resolution,
+        horizon_buffer_m=horizon_buffer_m,
+        extent_epsg=extent_epsg,
+    )
 
     return dem_prod
+

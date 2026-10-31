@@ -6,8 +6,23 @@ Unittests for the topography module
 from pytest import approx
 import numpy as np
 import xarray as xr
-from redress.topography.dem_products import horneslope
+from redress.topography.dem_products import (
+    art_relative_azimuth,
+    effective_zenith_angle,
+    horizon_elevation_at_azimuth,
+    horneslope,
+    local_relative_azimuth,
+    shadows,
+    skyview,
+    subpixel_visibility_fraction,
+    terrain_visibility,
+)
 from redress.inputs.products import Dem
+from redress.topography.idealized import (
+    solve_two_wall_irradiance,
+    symmetric_v_valley_local_wall_view_factor,
+    symmetric_v_valley_wall_view_factor,
+)
 
 
 class Test_dem_prods(object):
@@ -30,6 +45,181 @@ class Test_dem_prods(object):
         assert aspect[2, 2] == approx(np.deg2rad(270))
         assert aspect[2, -2] == approx(np.deg2rad(90))
 
+    def test_effective_angle_uses_local_surface_normal(self):
+        zenith = np.asarray([[np.deg2rad(45.0)]])
+        south = np.asarray([[np.deg2rad(180.0)]])
+        slope = np.asarray([[np.deg2rad(20.0)]])
+
+        incidence = effective_zenith_angle(zenith, south, slope, south)
+
+        assert incidence[0, 0] == approx(np.deg2rad(25.0))
+
+    def test_tangent_incidence_is_self_shadowed(self):
+        shape = (1, 1)
+        horizon = np.zeros((8, *shape))
+        incidence = np.full(shape, np.deg2rad(90.0))
+
+        _, self_visibility, _ = shadows(
+            horizon,
+            np.zeros(shape),
+            np.zeros(shape),
+            np.full(shape, np.deg2rad(45.0)),
+            incidence,
+            np.full(shape, np.pi),
+            min_cosine=0.0,
+        )
+
+        assert self_visibility[0, 0] == 0.0
+
+    def test_empirical_self_shadow_threshold_is_applied(self):
+        shape = (1, 1)
+        horizon = np.zeros((8, *shape))
+        incidence = np.full(shape, np.deg2rad(89.0))
+
+        _, self_visibility, _ = shadows(
+            horizon,
+            np.zeros(shape),
+            np.zeros(shape),
+            np.full(shape, np.deg2rad(45.0)),
+            incidence,
+            np.full(shape, np.pi),
+            min_cosine=0.035,
+        )
+
+        assert self_visibility[0, 0] == 0.0
+
+    def test_local_relative_azimuth_matches_flat_surface_geometry(self):
+        shape = (1, 1)
+        relative = local_relative_azimuth(
+            np.full(shape, np.deg2rad(40.0)),
+            np.full(shape, np.deg2rad(30.0)),
+            np.full(shape, np.deg2rad(10.0)),
+            np.full(shape, np.deg2rad(110.0)),
+            np.zeros(shape),
+            np.zeros(shape),
+        )
+
+        assert relative[0, 0] == approx(np.deg2rad(80.0))
+
+    def test_art_relative_azimuth_reverses_scattering_convention(self):
+        geometric = np.deg2rad(np.asarray([0.0, 80.0, 180.0]))
+
+        art = art_relative_azimuth(geometric)
+
+        assert art == approx(np.deg2rad([180.0, 100.0, 0.0]))
+
+    def test_skyview_uses_radian_slope_and_aspect(self):
+        horizon = np.zeros((64, 1, 1))
+        slope = np.asarray([[np.deg2rad(45.0)]])
+        aspect = np.zeros((1, 1))
+
+        visible_sky, terrain = skyview(horizon, slope, aspect)
+
+        assert visible_sky[0, 0] == approx(np.cos(np.deg2rad(45.0)))
+        assert terrain[0, 0] == approx(1.0 - visible_sky[0, 0])
+
+        _, dozier_frew_terrain = skyview(
+            horizon,
+            slope,
+            aspect,
+            terrain_configuration_method="dozier_frew",
+        )
+        assert dozier_frew_terrain[0, 0] == approx(
+            (1.0 + np.cos(np.deg2rad(45.0))) / 2.0
+            - visible_sky[0, 0]
+        )
+
+        _, bowl_terrain = skyview(
+            horizon,
+            slope,
+            aspect,
+            terrain_configuration_method="redress_bowl",
+        )
+        assert bowl_terrain[0, 0] == approx(1.0 - visible_sky[0, 0])
+
+    def test_symmetric_v_valley_exact_wall_view_factor(self):
+        assert symmetric_v_valley_wall_view_factor(25.0) == approx(
+            1.0 - np.cos(np.deg2rad(25.0))
+        )
+        assert symmetric_v_valley_wall_view_factor(55.0) == approx(
+            1.0 - np.cos(np.deg2rad(55.0))
+        )
+
+    def test_symmetric_v_valley_local_wall_view_factor(self):
+        assert symmetric_v_valley_local_wall_view_factor(25.0) == approx(
+            np.sin(np.deg2rad(25.0)) ** 2
+        )
+        assert symmetric_v_valley_local_wall_view_factor(50.0) == approx(
+            np.sin(np.deg2rad(50.0)) ** 2
+        )
+
+    def test_two_wall_solution_satisfies_exchange_equations(self):
+        result = solve_two_wall_irradiance(
+            irradiance_a_0=200.0,
+            irradiance_b_0=500.0,
+            view_factor=0.5,
+            reflectance_a=0.8,
+            reflectance_b=0.9,
+        )
+
+        assert result["irradiance_a"] == approx(
+            200.0 + 0.5 * 0.9 * result["irradiance_b"]
+        )
+        assert result["irradiance_b"] == approx(
+            500.0 + 0.5 * 0.8 * result["irradiance_a"]
+        )
+
+    def test_horizontal_skyview_matches_horizon_elevation(self):
+        horizon = np.full((64, 1, 1), 30.0)
+
+        visible_sky, _ = skyview(
+            horizon,
+            np.zeros((1, 1)),
+            np.zeros((1, 1)),
+        )
+
+        assert visible_sky[0, 0] == approx(np.cos(np.deg2rad(30.0)) ** 2)
+
+    def test_horizon_interpolation_and_terrain_visibility(self):
+        horizon = np.zeros((8, 1, 1))
+        horizon[4, 0, 0] = 30.0  # North in the REDRESS horizon ordering.
+        north = np.zeros((1, 1))
+        south = np.full((1, 1), np.pi)
+
+        assert horizon_elevation_at_azimuth(
+            horizon, north
+        )[0, 0] == approx(30.0)
+        assert horizon_elevation_at_azimuth(
+            horizon, south
+        )[0, 0] == approx(0.0)
+
+        north_visibility = terrain_visibility(
+            horizon,
+            np.full((1, 1), np.deg2rad(70.0)),
+            north,
+            np.full((1, 1), np.deg2rad(70.0)),
+        )
+        south_visibility = terrain_visibility(
+            horizon,
+            np.full((1, 1), np.deg2rad(70.0)),
+            south,
+            np.full((1, 1), np.deg2rad(70.0)),
+        )
+        assert north_visibility[0, 0] == 0.0
+        assert south_visibility[0, 0] == 1.0
+
+    def test_subpixel_visibility_is_an_area_fraction(self):
+        visibility = np.asarray([
+            [1.0, 1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0, 0.0],
+        ])
+
+        fraction = subpixel_visibility_fraction(visibility, 2)
+
+        assert fraction == approx(np.asarray([[0.75, 0.0], [1.0, 0.75]]))
+
 
 class Test_horizons(object):
     """Test the outputs of the horizon product"""
@@ -48,7 +238,7 @@ class Test_horizons(object):
         z = np.cos(y) * x + np.sin(x) * y
         z = z + 100
 
-        fake_dem.band = xr.DataArray(z)
+        fake_dem.bands["altitude"] = xr.DataArray(z, dims=["x", "y"])
 
         return fake_dem
 
@@ -98,7 +288,10 @@ class Test_horizons(object):
 
         distance = px * np.sqrt(ygrid**2+xgrid**2)
         azimuth = np.degrees(np.arctan2(xgrid, ygrid))
-        elevation = np.degrees(np.arctan(height / distance))
+        slope = np.divide(height, distance,
+                          out=np.zeros_like(height),
+                          where=distance != 0)
+        elevation = np.degrees(np.arctan(slope))
 
         elevation[ycoord, xcoord] = 0  # To avoid NaN
 
@@ -137,12 +330,13 @@ class Test_horizons(object):
 
         # Extract horizon data at a given point
         ct_phi, ct_ele, ct_dist = self.extract_horizon(
-            dem.topo_bands["horizon_ele"].data,
-            dem.topo_bands["horizon_dist"].data, point_a[0], point_a[1], N=32)
+            dem.bands["horizon_ele"].data,
+            dem.bands["horizon_dist"].data, point_a[0], point_a[1], N=32)
 
         # Extract horizon using the single point algorithm as comparison point
         onept_az, onept_ele, onept_dist = self.one_point_horizon(
-            dem.band.data, point_a[0], point_a[1], dem.pixel_size[0], 32)
+            dem.bands["altitude"].data,
+            point_a[0], point_a[1], dem.pixel_size[0], 32)
 
         # Compare distances to horizon 5% tolerence on mean
         assert np.average(np.array(ct_dist)) == approx(
@@ -150,3 +344,4 @@ class Test_horizons(object):
         # Compare values of elevation to horizon 5% tolerence on mean
         assert np.average(np.array(ct_ele)) == approx(
             np.average(np.array(onept_ele)), 4.5)
+
