@@ -32,7 +32,9 @@ from redress.topography.idealized import (
     circular_bowl,
     flat_plateau,
     narrow_couloir,
+    solve_two_wall_irradiance,
     symmetric_v_valley,
+    symmetric_v_valley_local_wall_view_factor,
     symmetric_v_valley_wall_view_factor,
     uniform_slope,
 )
@@ -94,6 +96,7 @@ TOPOGRAPHY_OUTPUT = OUTPUT_DIRECTORY / "idealized_topography.nc"
 REFLECTANCE_OUTPUT = OUTPUT_DIRECTORY / "idealized_toa_reflectance.nc"
 SAMPLE_OUTPUT = OUTPUT_DIRECTORY / "idealized_sample_results.nc"
 SAMPLE_CSV = OUTPUT_DIRECTORY / "idealized_sample_results.csv"
+TWO_WALL_CSV = OUTPUT_DIRECTORY / "two_wall_benchmark.csv"
 DEM_FIGURE = OUTPUT_DIRECTORY / "idealized_dem_overview.png"
 
 TOPOGRAPHIC_VARIABLES = (
@@ -449,6 +452,170 @@ def build_band_atmospheric_lookups(model, terrain):
     return lookups
 
 
+def wall_pre_exchange_irradiance(
+    row,
+    column,
+    topography,
+    angles,
+    atmospheric_lookup,
+    diagnostics,
+):
+    """Return a wall's direct and sky irradiance before terrain exchange."""
+
+    atmosphere = atmospheric_lookup["forward"]
+    solar_irradiance = atmosphere["solar_irradiance"][row, column]
+    flat_direct = atmosphere["direct_solar_irradiance"][row, column]
+    cosine_sza = np.cos(angles["SZA"].values[row, column])
+    direct_transmittance = flat_direct / (
+        solar_irradiance * cosine_sza
+    )
+    cosine_incidence = max(
+        np.cos(topography["eff_sza"].values[row, column]),
+        0.0,
+    )
+    direct = (
+        topography["beam_visibility"].values[row, column]
+        * solar_irradiance
+        * cosine_incidence
+        * direct_transmittance
+    )
+    sky = (
+        atmosphere["diffuse_solar_irradiance"][row, column]
+        + diagnostics["coupled_irradiance"][row, column]
+    ) * topography["vt"].values[row, column]
+    return {
+        "direct": float(direct),
+        "sky_diffuse": float(sky),
+        "total": float(direct + sky),
+    }
+
+
+def two_wall_benchmark_record(
+    terrain,
+    topography,
+    model,
+    band,
+    band_index,
+    snow_fraction,
+    terrain_configuration_method,
+    bhr,
+    atmospheric_lookup,
+    diagnostics,
+):
+    """Compare REDRESS with a two-wall radiosity solution at one wall."""
+
+    if not terrain.name.startswith("v_valley_"):
+        return None
+
+    wall_slope = float(terrain.name.removeprefix("v_valley_"))
+    sample = next(
+        item
+        for item in terrain.samples
+        if item.name == "away_wall_midpoint"
+    )
+    row_a, column_a = sample_index(terrain, sample)
+    row_b = int(np.argmin(
+        np.abs(terrain.northing_m + sample.northing_m)
+    ))
+    column_b = column_a
+
+    illumination_a = wall_pre_exchange_irradiance(
+        row_a,
+        column_a,
+        topography,
+        model.angles,
+        atmospheric_lookup,
+        diagnostics,
+    )
+    illumination_b = wall_pre_exchange_irradiance(
+        row_b,
+        column_b,
+        topography,
+        model.angles,
+        atmospheric_lookup,
+        diagnostics,
+    )
+    reflectance_a = float(bhr[row_a, column_a])
+    reflectance_b = float(bhr[row_b, column_b])
+    local_infinite_factor = (
+        symmetric_v_valley_local_wall_view_factor(wall_slope)
+    )
+    raster_factor = float(topography["ct"].values[row_a, column_a])
+    infinite_solution = solve_two_wall_irradiance(
+        illumination_a["total"],
+        illumination_b["total"],
+        local_infinite_factor,
+        reflectance_a,
+        reflectance_b,
+    )
+    raster_solution = solve_two_wall_irradiance(
+        illumination_a["total"],
+        illumination_b["total"],
+        raster_factor,
+        reflectance_a,
+        reflectance_b,
+    )
+    redress_terrain = float(
+        diagnostics["terrain_reflected_irradiance"][row_a, column_a]
+    )
+    redress_flat_neighbour = float(
+        diagnostics["flat_direct_irradiance"][row_a, column_a]
+        + diagnostics["flat_diffuse_irradiance"][row_a, column_a]
+        + diagnostics["coupled_irradiance"][row_a, column_a]
+    )
+    raster_two_wall_terrain = float(
+        raster_solution["terrain_irradiance_a"]
+    )
+    infinite_two_wall_terrain = float(
+        infinite_solution["terrain_irradiance_a"]
+    )
+
+    return {
+        "terrain": terrain.name,
+        "wall_slope_degree": wall_slope,
+        "band": band,
+        "wavelength_nm": model.meta["wavelengths"][band_index],
+        "opposite_wall_snow_fraction": snow_fraction,
+        "terrain_configuration_method": terrain_configuration_method,
+        "reflectance_a": reflectance_a,
+        "reflectance_b": reflectance_b,
+        "incidence_a_degree": np.rad2deg(
+            topography["eff_sza"].values[row_a, column_a]
+        ),
+        "incidence_b_degree": np.rad2deg(
+            topography["eff_sza"].values[row_b, column_b]
+        ),
+        "beam_visibility_a": topography[
+            "beam_visibility"
+        ].values[row_a, column_a],
+        "beam_visibility_b": topography[
+            "beam_visibility"
+        ].values[row_b, column_b],
+        "direct_irradiance_a": illumination_a["direct"],
+        "direct_irradiance_b": illumination_b["direct"],
+        "sky_diffuse_irradiance_a": illumination_a["sky_diffuse"],
+        "sky_diffuse_irradiance_b": illumination_b["sky_diffuse"],
+        "pre_exchange_irradiance_a": illumination_a["total"],
+        "pre_exchange_irradiance_b": illumination_b["total"],
+        "redress_flat_neighbour_irradiance": redress_flat_neighbour,
+        "local_infinite_view_factor": local_infinite_factor,
+        "raster_view_factor": raster_factor,
+        "redress_terrain_irradiance": redress_terrain,
+        "two_wall_raster_terrain_irradiance": raster_two_wall_terrain,
+        "two_wall_infinite_terrain_irradiance": infinite_two_wall_terrain,
+        "redress_vs_raster_two_wall_percent": (
+            100.0 * (redress_terrain / raster_two_wall_terrain - 1.0)
+            if raster_two_wall_terrain != 0.0
+            else np.nan
+        ),
+        "redress_vs_infinite_two_wall_percent": (
+            100.0 * (redress_terrain / infinite_two_wall_terrain - 1.0)
+            if infinite_two_wall_terrain != 0.0
+            else np.nan
+        ),
+    }
+
+
 def simulate_cover(
     model,
     terrain,
@@ -478,6 +645,8 @@ def simulate_cover(
             "atmospheric_path",
         )
     }
+    diagnostics = {}
+    two_wall_records = []
 
     for index, (band, wavelength, definition) in enumerate(zip(
         model.meta["bandlist"],
@@ -509,6 +678,7 @@ def simulate_cover(
             rt_wavelength=definition.py6s_filter,
             return_reflectance=True,
             return_components=True,
+            return_diagnostics=True,
             verbose=False,
             pixel_resolution_m=PIXEL_RESOLUTION_M,
             terrain_window_width_m=TERRAIN_WINDOW_WIDTH_M,
@@ -516,10 +686,31 @@ def simulate_cover(
             atmosphere_altitude_step_m=ATMOSPHERE_ALTITUDE_STEP_M,
             atmospheric_lookup=atmospheric_lookups[band],
         )
-        _, band_reflectance, band_components = result
+        (
+            _,
+            band_reflectance,
+            band_components,
+            band_diagnostics,
+        ) = result
         reflectance.append(band_reflectance)
         for name in components:
             components[name].append(band_components[name])
+        for name, values in band_diagnostics.items():
+            diagnostics.setdefault(name, []).append(values)
+        benchmark = two_wall_benchmark_record(
+            terrain,
+            topography,
+            model,
+            band,
+            index,
+            opposite_wall_snow_fraction,
+            terrain_configuration_method,
+            bhr,
+            atmospheric_lookups[band],
+            band_diagnostics,
+        )
+        if benchmark is not None:
+            two_wall_records.append(benchmark)
 
     return (
         np.stack(reflectance, axis=0),
@@ -527,6 +718,11 @@ def simulate_cover(
             name: np.stack(values, axis=0)
             for name, values in components.items()
         },
+        {
+            name: np.stack(values, axis=0)
+            for name, values in diagnostics.items()
+        },
+        two_wall_records,
     )
 
 
@@ -596,6 +792,7 @@ def sample_records(
     terrain_configuration_method,
     reflectance,
     components,
+    diagnostics,
 ):
     """Extract radiometric and terrain diagnostics at named samples."""
 
@@ -653,6 +850,10 @@ def sample_records(
             )
             for name, values in components.items():
                 record[f"toa_{name}_radiance"] = values[
+                    band_index, row, column
+                ]
+            for name, values in diagnostics.items():
+                record[f"redress_{name}"] = values[
                     band_index, row, column
                 ]
             records.append(record)
@@ -773,6 +974,7 @@ def main():
 
     raster_outputs = []
     records = []
+    two_wall_records = []
     for terrain in terrains:
         _, dem = terrain_products[terrain.name]
         model = configured_model(dem)
@@ -790,13 +992,19 @@ def main():
                     f"Running {terrain.label}; opposite-wall snow "
                     f"fraction={snow_fraction:.2f}; Ct={method}"
                 )
-                reflectance, components = simulate_cover(
+                (
+                    reflectance,
+                    components,
+                    diagnostics,
+                    benchmark_records,
+                ) = simulate_cover(
                     model,
                     terrain,
                     snow_fraction,
                     method,
                     atmospheric_lookups,
                 )
+                two_wall_records.extend(benchmark_records)
                 raster_outputs.append(raster_output_dataset(
                     terrain,
                     model,
@@ -812,6 +1020,7 @@ def main():
                     method,
                     reflectance,
                     components,
+                    diagnostics,
                 ))
 
     topography = xr.concat(
@@ -862,6 +1071,7 @@ def main():
     )
     sample_dataset.to_netcdf(SAMPLE_OUTPUT)
     save_csv(records, SAMPLE_CSV)
+    save_csv(two_wall_records, TWO_WALL_CSV)
 
     figure = plot_dem_overview(terrains)
     figure.savefig(DEM_FIGURE, dpi=250, bbox_inches="tight")
@@ -871,6 +1081,7 @@ def main():
     print(f"TOA-reflectance rasters: {REFLECTANCE_OUTPUT}")
     print(f"Sample diagnostics: {SAMPLE_OUTPUT}")
     print(f"Sample CSV: {SAMPLE_CSV}")
+    print(f"Two-wall benchmark: {TWO_WALL_CSV}")
     print(f"DEM overview: {DEM_FIGURE}")
 
 

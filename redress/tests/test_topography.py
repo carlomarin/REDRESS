@@ -19,6 +19,8 @@ from redress.topography.dem_products import (
 )
 from redress.inputs.products import Dem
 from redress.topography.idealized import (
+    solve_two_wall_irradiance,
+    symmetric_v_valley_local_wall_view_factor,
     symmetric_v_valley_wall_view_factor,
 )
 
@@ -141,6 +143,30 @@ class Test_dem_prods(object):
         )
         assert symmetric_v_valley_wall_view_factor(55.0) == approx(
             1.0 - np.cos(np.deg2rad(55.0))
+        )
+
+    def test_symmetric_v_valley_local_wall_view_factor(self):
+        assert symmetric_v_valley_local_wall_view_factor(25.0) == approx(
+            np.sin(np.deg2rad(25.0)) ** 2
+        )
+        assert symmetric_v_valley_local_wall_view_factor(50.0) == approx(
+            np.sin(np.deg2rad(50.0)) ** 2
+        )
+
+    def test_two_wall_solution_satisfies_exchange_equations(self):
+        result = solve_two_wall_irradiance(
+            irradiance_a_0=200.0,
+            irradiance_b_0=500.0,
+            view_factor=0.5,
+            reflectance_a=0.8,
+            reflectance_b=0.9,
+        )
+
+        assert result["irradiance_a"] == approx(
+            200.0 + 0.5 * 0.9 * result["irradiance_b"]
+        )
+        assert result["irradiance_b"] == approx(
+            500.0 + 0.5 * 0.8 * result["irradiance_a"]
         )
 
     def test_horizontal_skyview_matches_horizon_elevation(self):

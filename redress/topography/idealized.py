@@ -43,6 +43,98 @@ def symmetric_v_valley_wall_view_factor(wall_slope_degree):
     return 1.0 - np.cos(np.deg2rad(wall_slope_degree))
 
 
+def symmetric_v_valley_local_wall_view_factor(wall_slope_degree):
+    """Return the local wall-to-wall factor for a semi-infinite 2-D V.
+
+    For wall A of length ``a`` and opposite wall B of length ``b``, the
+    crossed-string result is
+
+    ``a F_A,B = (a + b - d) / 2``,
+
+    where ``d² = a² + b² + 2ab cos(2 beta)``. Differentiating with respect
+    to ``a`` gives the factor for an infinitesimal strip at the end of A.
+    Taking ``b`` to infinity gives
+
+    ``F_dA,B = (1 - cos(2 beta)) / 2 = sin²(beta)``.
+
+    This local factor must not be confused with the equal-wall area mean
+    returned by :func:`symmetric_v_valley_wall_view_factor`.
+    """
+
+    if not 0.0 <= wall_slope_degree < 90.0:
+        raise ValueError("wall_slope_degree must be in [0, 90) degrees")
+    return np.sin(np.deg2rad(wall_slope_degree)) ** 2
+
+
+def solve_two_wall_irradiance(
+    irradiance_a_0,
+    irradiance_b_0,
+    view_factor,
+    reflectance_a,
+    reflectance_b,
+):
+    """Solve diffuse inter-reflection between two Lambertian walls.
+
+    ``irradiance_a_0`` and ``irradiance_b_0`` contain each wall's own direct
+    and sky-diffuse illumination before terrain exchange. The returned
+    terrain terms include every order of reflection between the walls.
+    """
+
+    values = {
+        "irradiance_a_0": irradiance_a_0,
+        "irradiance_b_0": irradiance_b_0,
+        "view_factor": view_factor,
+        "reflectance_a": reflectance_a,
+        "reflectance_b": reflectance_b,
+    }
+    values = {
+        name: np.asarray(value, dtype=np.float64)
+        for name, value in values.items()
+    }
+    if np.any((values["view_factor"] < 0.0) | (
+        values["view_factor"] > 1.0
+    )):
+        raise ValueError("view_factor must lie in [0, 1]")
+    for name in ("reflectance_a", "reflectance_b"):
+        if np.any((values[name] < 0.0) | (values[name] > 1.0)):
+            raise ValueError(f"{name} must lie in [0, 1]")
+
+    denominator = 1.0 - (
+        values["view_factor"] ** 2
+        * values["reflectance_a"]
+        * values["reflectance_b"]
+    )
+    if np.any(denominator <= 0.0):
+        raise ValueError("two-wall reflection series does not converge")
+
+    irradiance_a = (
+        values["irradiance_a_0"]
+        + values["view_factor"]
+        * values["reflectance_b"]
+        * values["irradiance_b_0"]
+    ) / denominator
+    irradiance_b = (
+        values["irradiance_b_0"]
+        + values["view_factor"]
+        * values["reflectance_a"]
+        * values["irradiance_a_0"]
+    ) / denominator
+    return {
+        "irradiance_a": irradiance_a,
+        "irradiance_b": irradiance_b,
+        "terrain_irradiance_a": (
+            values["view_factor"]
+            * values["reflectance_b"]
+            * irradiance_b
+        ),
+        "terrain_irradiance_b": (
+            values["view_factor"]
+            * values["reflectance_a"]
+            * irradiance_a
+        ),
+    }
+
+
 def metric_grid(grid_size, pixel_resolution_m):
     """Return northing/easting axes and grids centred on the middle cell."""
 

@@ -376,6 +376,7 @@ def iterative_radiance(
     rt_wavelength=None,
     return_reflectance=False,
     return_components=False,
+    return_diagnostics=False,
     max_iterations=100,
     verbose=True,
     pixel_resolution_m=DEFAULT_PIXEL_RESOLUTION_M,
@@ -576,12 +577,11 @@ def iterative_radiance(
             coupled_irradiance = 0.0
         EtP = EtP_flat + coupled_irradiance
 
+        # Mean direct-beam visibility of the terrain neighbourhood.
+        shad = bb_nbh
+
         # Terrain contribution switch
         if case.terrain_contribution:
-
-            # Add shadow off option in eq. 18
-            shad = bb_nbh  # Disable reillumination from shadows
-
             # # Terrain re-illumination, eq. 18 substituted by eq. 11 from
             # # Sirguey et al. 2011
             # Terrain reflected irradiance
@@ -662,9 +662,33 @@ def iterative_radiance(
         ).copy()
         for name, value in components.items()
     }
+    diagnostics = None
+    if return_diagnostics:
+        diagnostics = {
+            "direct_irradiance": EdP,
+            "flat_direct_irradiance": EdP_flat,
+            "flat_diffuse_irradiance": EhP_flat,
+            "coupled_irradiance": coupled_irradiance,
+            "terrain_reflected_irradiance": EtGP,
+            "total_diffuse_irradiance": EhP,
+            "terrain_neighbour_reflectance": rt[:, :, -1],
+            "environment_neighbour_reflectance": re[:, :, -1],
+            "terrain_neighbour_beam_visibility": shad,
+            "terrain_neighbour_configuration_factor": ct_nbh,
+        }
+        diagnostics = {
+            name: np.broadcast_to(
+                np.asarray(value, dtype=np.float64), toa_radiance.shape
+            ).copy()
+            for name, value in diagnostics.items()
+        }
     if not return_reflectance:
+        if return_components and return_diagnostics:
+            return toa_radiance, components, diagnostics
         if return_components:
             return toa_radiance, components
+        if return_diagnostics:
+            return toa_radiance, diagnostics
         return toa_radiance
 
     reflectance_denominator = Eo * cos_sza
@@ -675,6 +699,15 @@ def iterative_radiance(
         where=reflectance_denominator > 0,
     )
     if return_components:
+        if return_diagnostics:
+            return (
+                toa_radiance,
+                toa_reflectance,
+                components,
+                diagnostics,
+            )
         return toa_radiance, toa_reflectance, components
+    if return_diagnostics:
+        return toa_radiance, toa_reflectance, diagnostics
     return toa_radiance, toa_reflectance
 

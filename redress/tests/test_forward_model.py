@@ -244,7 +244,7 @@ def test_surface_atmosphere_coupling_is_sky_view_masked(sky_view_factor):
         case = Cases()
         case.create_cases(case_number)
         _CoupledAtmosphere.ground_reflectances = []
-        _, _, case_components = iterative_radiance(
+        _, _, case_components, diagnostics = iterative_radiance(
             topography,
             angles,
             wavelength=550.0,
@@ -264,10 +264,13 @@ def test_surface_atmosphere_coupling_is_sky_view_masked(sky_view_factor):
             case=case,
             return_reflectance=True,
             return_components=True,
+            return_diagnostics=True,
             verbose=False,
         )
         components[case_number] = case_components
         assert _CoupledAtmosphere.ground_reflectances == [0.0, 0.0]
+        assert diagnostics["terrain_reflected_irradiance"].shape == shape
+        assert diagnostics["total_diffuse_irradiance"].shape == shape
 
     direct_flat = 1000.0 * np.cos(np.deg2rad(45.0)) * 0.8
     total_flat = direct_flat + 100.0
