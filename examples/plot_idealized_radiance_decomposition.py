@@ -46,7 +46,8 @@ TERRAIN_ORDER = (
     "v_valley_45",
     "v_valley_55",
     "circular_bowl_40",
-    "narrow_couloir_65",
+    "narrow_couloir_sun_aligned_65",
+    "narrow_couloir_cross_sun_65",
 )
 
 TERRAIN_SHORT_LABELS = {
@@ -57,7 +58,12 @@ TERRAIN_SHORT_LABELS = {
     "v_valley_45": "V-valley\nβ=45°",
     "v_valley_55": "V-valley\nβ=55°",
     "circular_bowl_40": "Circular bowl\nβ=40°",
-    "narrow_couloir_65": "Narrow couloir\nβ=65°",
+    "narrow_couloir_sun_aligned_65": (
+        "Couloir β=65°\naxis along Sun"
+    ),
+    "narrow_couloir_cross_sun_65": (
+        "Couloir β=65°\naxis across Sun"
+    ),
 }
 
 SAMPLE_SHORT_LABELS = {
@@ -66,7 +72,7 @@ SAMPLE_SHORT_LABELS = {
     "away_wall_midpoint": "away wall",
     "valley_floor": "floor",
     "bowl_floor": "floor",
-    "west_wall_midpoint": "west wall",
+    "cross_wall_midpoint": "mid-wall",
     "couloir_floor": "floor",
 }
 
@@ -159,7 +165,7 @@ def ordered_cases(records):
         "centre": 0,
         "mid_slope": 0,
         "away_wall_midpoint": 0,
-        "west_wall_midpoint": 0,
+        "cross_wall_midpoint": 0,
         "valley_floor": 1,
         "bowl_floor": 1,
         "couloir_floor": 1,

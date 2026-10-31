@@ -151,6 +151,17 @@ def build_terrain_suite():
             GRID_SIZE,
             PIXEL_RESOLUTION_M,
             wall_slope_degree=65.0,
+            axis_azimuth_degree=SOLAR_AZIMUTH_DEG,
+            name="narrow_couloir_sun_aligned_65",
+            label="65° couloir aligned with the Sun",
+        ),
+        narrow_couloir(
+            GRID_SIZE,
+            PIXEL_RESOLUTION_M,
+            wall_slope_degree=65.0,
+            axis_azimuth_degree=(SOLAR_AZIMUTH_DEG + 90.0) % 180.0,
+            name="narrow_couloir_cross_sun_65",
+            label="65° couloir perpendicular to the Sun",
         ),
     ))
 
@@ -301,6 +312,20 @@ def validate_terrain_sequence(terrain_products):
     ) != 0.0:
         raise AssertionError(
             "The 55° away-facing valley wall should be self-shadowed"
+        )
+    if value(
+        "narrow_couloir_sun_aligned_65",
+        "beam_visibility",
+        "couloir_floor",
+    ) != 1.0:
+        raise AssertionError("The sun-aligned couloir floor should be lit")
+    if value(
+        "narrow_couloir_cross_sun_65",
+        "beam_visibility",
+        "couloir_floor",
+    ) != 0.0:
+        raise AssertionError(
+            "The cross-sun couloir floor should be cast-shadowed"
         )
 
 
@@ -609,7 +634,15 @@ def save_csv(records, output_file):
 def plot_dem_overview(terrains):
     """Plot every analytical elevation raster and its sample locations."""
 
-    figure, axes = plt.subplots(2, 4, figsize=(16, 8), constrained_layout=True)
+    columns = 3
+    rows = int(np.ceil(len(terrains) / columns))
+    figure, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(15, 4.2 * rows),
+        constrained_layout=True,
+        squeeze=False,
+    )
     for axis, terrain in zip(axes.ravel(), terrains):
         image = axis.imshow(
             terrain.elevation_m,
@@ -642,6 +675,8 @@ def plot_dem_overview(terrains):
         axis.set_xlabel("Easting (m)")
         axis.set_ylabel("Northing (m)")
         figure.colorbar(image, ax=axis, shrink=0.72, label="Elevation (m)")
+    for axis in axes.ravel()[len(terrains):]:
+        axis.set_visible(False)
     return figure
 
 

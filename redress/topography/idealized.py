@@ -207,17 +207,31 @@ def narrow_couloir(
     grid_size,
     pixel_resolution_m,
     wall_slope_degree=65.0,
+    axis_azimuth_degree=0.0,
     floor_half_width_m=100.0,
     wall_width_m=600.0,
     floor_altitude_m=1500.0,
+    name=None,
+    label=None,
 ):
-    """Build a north-south couloir enclosed by steep east and west walls."""
+    """Build a narrow couloir along a specified compass azimuth."""
 
     north_axis, east_axis, north, east = metric_grid(
         grid_size, pixel_resolution_m
     )
+    axis_azimuth = np.deg2rad(axis_azimuth_degree)
+    cross_east = np.cos(axis_azimuth)
+    cross_north = -np.sin(axis_azimuth)
+    if abs(cross_east) < 1e-12:
+        cross_east = 0.0
+    if abs(cross_north) < 1e-12:
+        cross_north = 0.0
+    cross_axis_distance = (
+        east * cross_east
+        + north * cross_north
+    )
     wall_distance = np.clip(
-        np.abs(east) - floor_half_width_m,
+        np.abs(cross_axis_distance) - floor_half_width_m,
         0.0,
         wall_width_m,
     )
@@ -226,19 +240,32 @@ def narrow_couloir(
         + np.tan(np.deg2rad(wall_slope_degree)) * wall_distance
     )
     opposite_wall = (
-        (east > floor_half_width_m)
-        & (east <= floor_half_width_m + wall_width_m)
+        (cross_axis_distance > floor_half_width_m)
+        & (
+            cross_axis_distance
+            <= floor_half_width_m + wall_width_m
+        )
     )
     midpoint = floor_half_width_m + wall_width_m / 2.0
+    sample_easting = -midpoint * cross_east
+    sample_northing = -midpoint * cross_north
+    suffix = f"{wall_slope_degree:g}_{axis_azimuth_degree:g}"
     return IdealizedTerrain(
-        name=f"narrow_couloir_{wall_slope_degree:g}",
-        label=f"Narrow couloir, wall slope {wall_slope_degree:g}°",
+        name=name or f"narrow_couloir_{suffix}",
+        label=label or (
+            f"Narrow couloir, wall slope {wall_slope_degree:g}°, "
+            f"axis {axis_azimuth_degree:g}°"
+        ),
         elevation_m=elevation,
         northing_m=north_axis,
         easting_m=east_axis,
         opposite_wall_mask=opposite_wall,
         samples=(
-            TerrainSample("west_wall_midpoint", 0.0, -midpoint),
+            TerrainSample(
+                "cross_wall_midpoint",
+                sample_northing,
+                sample_easting,
+            ),
             TerrainSample("couloir_floor", 0.0, 0.0),
         ),
     )
