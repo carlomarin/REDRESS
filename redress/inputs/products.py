@@ -639,6 +639,8 @@ class Model(object):
         atmosphere_window_width_m=DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M,
         atmosphere_altitude_step_m=None,
         weight_terrain_by_neighbour_beam_visibility=True,
+        terrain_reflection_method="flat_irradiance",
+        terrain_visibility_radius_m=None,
     ):
         """Simulate TOA radiance with physical spatial scales.
 
@@ -647,6 +649,10 @@ class Model(object):
         is retained. ``weight_terrain_by_neighbour_beam_visibility`` controls
         the published REDRESS approximation that suppresses the complete
         terrain-reflected term according to the sunlit neighbour fraction.
+        ``terrain_reflection_method="neighbour_exitance"`` instead averages
+        each neighbour's reflectance times its own irradiance, and
+        ``"visible_exitance"`` weights that average by line-of-sight view
+        factors out to ``terrain_visibility_radius_m``.
         """
 
         self.toa_rad = xr.Dataset()
@@ -707,6 +713,8 @@ class Model(object):
                 weight_terrain_by_neighbour_beam_visibility=(
                     weight_terrain_by_neighbour_beam_visibility
                 ),
+                terrain_reflection_method=terrain_reflection_method,
+                terrain_visibility_radius_m=terrain_visibility_radius_m,
             )
             (synthetic_toa_radiance,
              synthetic_toa_reflectance,

@@ -5,7 +5,7 @@ This file is part of the complex_terrain algorithm
 M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 """
 import numpy as np
-from numba import njit
+from numba import njit, prange
 from scipy.ndimage import binary_closing
 
 
@@ -435,3 +435,160 @@ def art_relative_azimuth(geometric_relative_azimuth):
     unsigned = np.arccos(np.clip(np.cos(relative_azimuth), -1.0, 1.0))
     return np.pi - unsigned
 
+
+
+@njit(parallel=True)
+def _visible_neighbour_sums(
+    values,
+    altitude,
+    normal_east,
+    normal_north,
+    normal_up,
+    pixel_size,
+    radius_pixels,
+    n_directions,
+):
+    """Accumulate view-factor-weighted sums over visible neighbours."""
+
+    n_fields, rows, cols = values.shape
+    sums = np.zeros((n_fields, rows, cols), dtype=np.float64)
+    weights = np.zeros((rows, cols), dtype=np.float64)
+    angular_step = 2.0 * np.pi / n_directions
+
+    for row in prange(rows):
+        for col in range(cols):
+            if not (
+                np.isfinite(altitude[row, col])
+                and np.isfinite(normal_up[row, col])
+            ):
+                continue
+            for direction in range(n_directions):
+                azimuth = direction * angular_step
+                east = np.sin(azimuth)
+                north = np.cos(azimuth)
+                max_tangent = -np.inf
+                for step in range(1, radius_pixels + 1):
+                    # Rows increase southward and columns eastward.
+                    target_row = int(np.rint(row - step * north))
+                    target_col = int(np.rint(col + step * east))
+                    if not (
+                        0 <= target_row < rows and 0 <= target_col < cols
+                    ):
+                        break
+                    rise = altitude[target_row, target_col] - altitude[
+                        row, col
+                    ]
+                    run = step * pixel_size
+                    if not np.isfinite(rise):
+                        break
+                    tangent = rise / run
+                    visible = tangent >= max_tangent - 1e-12
+                    if tangent > max_tangent:
+                        max_tangent = tangent
+                    if not visible:
+                        continue
+                    distance = np.sqrt(run * run + rise * rise)
+                    ray_east = run * east / distance
+                    ray_north = run * north / distance
+                    ray_up = rise / distance
+                    cos_source = (
+                        normal_east[row, col] * ray_east
+                        + normal_north[row, col] * ray_north
+                        + normal_up[row, col] * ray_up
+                    )
+                    cos_target = -(
+                        normal_east[target_row, target_col] * ray_east
+                        + normal_north[target_row, target_col] * ray_north
+                        + normal_up[target_row, target_col] * ray_up
+                    )
+                    if not (cos_source > 0.0 and cos_target > 0.0):
+                        continue
+                    finite = True
+                    for field in range(n_fields):
+                        if not np.isfinite(
+                            values[field, target_row, target_col]
+                        ):
+                            finite = False
+                    if not finite:
+                        continue
+                    # Sloped surface area of the polar sample cell.
+                    area = (
+                        run * angular_step * pixel_size
+                        / normal_up[target_row, target_col]
+                    )
+                    weight = (
+                        cos_source * cos_target * area
+                        / (np.pi * distance * distance)
+                    )
+                    weights[row, col] += weight
+                    for field in range(n_fields):
+                        sums[field, row, col] += (
+                            weight * values[field, target_row, target_col]
+                        )
+    return sums, weights
+
+
+def visible_neighbour_mean(
+    values,
+    altitude,
+    slope,
+    aspect,
+    pixel_size,
+    radius_pixels,
+    n_directions=64,
+):
+    """Average neighbour fields weighted by their discrete view factor.
+
+    Rays are marched from every pixel in ``n_directions`` azimuths, one pixel
+    per step, out to ``radius_pixels``. A neighbour contributes only when it
+    lies on or above the running elevation-angle maximum along the ray and
+    both surfaces face each other. Its weight is the view-factor element
+    ``cos(theta_P) cos(theta_Q) dA / (pi d^2)``, so coplanar, hidden and
+    back-facing terrain receive no weight.
+
+    Args:
+        values (ndarray): Field(s) to average, shaped (rows, cols) or
+            (n_fields, rows, cols).
+        altitude (ndarray): DEM in metres.
+        slope (ndarray): Slope in radians.
+        aspect (ndarray): Downslope azimuth in radians, clockwise from north.
+        pixel_size (float): Square pixel size in metres.
+        radius_pixels (int): Ray length in pixels.
+        n_directions (int): Number of azimuth directions.
+
+    Returns:
+        (ndarray, ndarray): The weighted mean with the shape of ``values``,
+            NaN where no neighbour is visible, and the summed view factor of
+            the visible neighbours within the radius.
+    """
+
+    if not isinstance(radius_pixels, (int, np.integer)) or radius_pixels < 1:
+        raise ValueError("radius_pixels must be a positive integer")
+    if not isinstance(n_directions, (int, np.integer)) or n_directions < 4:
+        raise ValueError("n_directions must be an integer of at least 4")
+    if not np.isfinite(pixel_size) or pixel_size <= 0:
+        raise ValueError("pixel_size must be positive and finite")
+
+    values = np.asarray(values, dtype=np.float64)
+    single_field = values.ndim == 2
+    if single_field:
+        values = values[np.newaxis]
+    slope = np.asarray(slope, dtype=np.float64)
+    aspect = np.asarray(aspect, dtype=np.float64)
+    sums, weights = _visible_neighbour_sums(
+        np.ascontiguousarray(values),
+        np.ascontiguousarray(altitude, dtype=np.float64),
+        np.ascontiguousarray(np.sin(slope) * np.sin(aspect)),
+        np.ascontiguousarray(np.sin(slope) * np.cos(aspect)),
+        np.ascontiguousarray(np.cos(slope)),
+        float(pixel_size),
+        int(radius_pixels),
+        int(n_directions),
+    )
+    mean = np.divide(
+        sums,
+        weights,
+        out=np.full_like(sums, np.nan),
+        where=weights > 0,
+    )
+    return (mean[0] if single_field else mean), weights

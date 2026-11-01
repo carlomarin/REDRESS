@@ -37,6 +37,7 @@ BANDS = ("B03", "B08", "B11")
 OPPOSITE_WALL_SNOW_FRACTION = 1.0
 TERRAIN_CONFIGURATION_METHOD = "hemispheric_closure"
 NEIGHBOUR_BEAM_WEIGHTING = 1.0
+TERRAIN_REFLECTION_METHOD = "flat_irradiance"
 SUNLIT_VISIBILITY_THRESHOLD = 0.5
 
 TERRAIN_ORDER = (
@@ -119,6 +120,7 @@ def read_records(input_file):
         "sample",
         "band",
         "terrain_configuration_method",
+        "terrain_reflection_method",
     }
     records = []
     with input_file.open("r", newline="", encoding="utf-8") as stream:
@@ -151,6 +153,10 @@ def select_all_snow_records(records):
             "neighbour_beam_weighting",
             NEIGHBOUR_BEAM_WEIGHTING,
         ) == NEIGHBOUR_BEAM_WEIGHTING
+        and record.get(
+            "terrain_reflection_method",
+            TERRAIN_REFLECTION_METHOD,
+        ) == TERRAIN_REFLECTION_METHOD
     ]
     if not selected:
         raise ValueError(

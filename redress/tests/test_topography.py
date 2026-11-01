@@ -16,10 +16,12 @@ from redress.topography.dem_products import (
     skyview,
     subpixel_visibility_fraction,
     terrain_visibility,
+    visible_neighbour_mean,
 )
 from redress.inputs.products import Dem
 from redress.topography.idealized import (
     solve_two_wall_irradiance,
+    symmetric_v_valley,
     symmetric_v_valley_local_wall_view_factor,
     symmetric_v_valley_wall_view_factor,
 )
@@ -345,3 +347,46 @@ class Test_horizons(object):
         assert np.average(np.array(ct_ele)) == approx(
             np.average(np.array(onept_ele)), 4.5)
 
+
+def test_visible_neighbour_mean_selects_the_opposite_v_valley_wall():
+    resolution = 20.0
+    terrain = symmetric_v_valley(61, resolution, 45.0, wall_extent_m=500.0)
+    slope, aspect = horneslope(terrain.elevation_m, (resolution, resolution))
+    wall_b = terrain.opposite_wall_mask.astype(np.float64)
+    row_a = int(np.argmin(np.abs(terrain.northing_m + 240.0)))
+    row_b = int(np.argmin(np.abs(terrain.northing_m - 240.0)))
+
+    mean, view_factor = visible_neighbour_mean(
+        wall_b,
+        terrain.elevation_m,
+        slope,
+        aspect,
+        resolution,
+        radius_pixels=25,
+    )
+
+    # Each wall sees only the opposite wall: its own plane is tangent.
+    assert mean[row_a, 30] == approx(1.0)
+    assert mean[row_b, 30] == approx(0.0)
+    assert view_factor[row_a, 30] == approx(view_factor[row_b, 30])
+    assert 0.0 < view_factor[row_a, 30] < (
+        symmetric_v_valley_local_wall_view_factor(45.0)
+    )
+
+
+def test_visible_neighbour_mean_is_undefined_on_a_plane():
+    resolution = 20.0
+    altitude = np.full((21, 21), 1000.0)
+    slope, aspect = horneslope(altitude, (resolution, resolution))
+
+    mean, view_factor = visible_neighbour_mean(
+        np.ones_like(altitude),
+        altitude,
+        slope,
+        aspect,
+        resolution,
+        radius_pixels=5,
+    )
+
+    assert np.all(view_factor == 0.0)
+    assert np.all(np.isnan(mean))

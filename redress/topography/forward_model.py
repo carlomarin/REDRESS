@@ -7,10 +7,17 @@ M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 import numpy as np
 from scipy.ndimage import uniform_filter
 
+from redress.topography.dem_products import visible_neighbour_mean
+
 
 DEFAULT_TERRAIN_WINDOW_WIDTH_M = 1500.0
 DEFAULT_ATMOSPHERE_WINDOW_WIDTH_M = 2100.0
 DEFAULT_PIXEL_RESOLUTION_M = 300.0
+TERRAIN_REFLECTION_METHODS = (
+    "flat_irradiance",
+    "neighbour_exitance",
+    "visible_exitance",
+)
 
 
 def window_size_from_distance(window_width_m, pixel_resolution_m):
@@ -35,6 +42,17 @@ def window_size_from_distance(window_width_m, pixel_resolution_m):
     if window_size % 2 == 0:
         window_size += 1
     return window_size
+
+
+def _radius_pixels_from_distance(radius_m, pixel_resolution_m):
+    """Convert a physical ray length to a whole number of pixel steps."""
+
+    radius_m = float(radius_m)
+    if not np.isfinite(radius_m) or radius_m <= 0:
+        raise ValueError(
+            "terrain_visibility_radius_m must be a positive finite value"
+        )
+    return max(1, int(np.ceil(radius_m / float(pixel_resolution_m))))
 
 
 def _validate_window_size(window_size, name):
@@ -385,13 +403,36 @@ def iterative_radiance(
     atmosphere_altitude_step_m=None,
     atmospheric_lookup=None,
     weight_terrain_by_neighbour_beam_visibility=True,
+    terrain_reflection_method="flat_irradiance",
+    terrain_visibility_radius_m=None,
 ):
     """Iterative solver for TOA radiance.
 
     Neighbourhood windows are derived from their physical widths and the
     raster resolution. The ``tw`` and ``aw`` arguments remain available as
     explicit pixel-count overrides for reproducing earlier calculations.
+
+    ``terrain_reflection_method`` selects how neighbours illuminate a pixel.
+    ``flat_irradiance`` is the published REDRESS approximation, which
+    multiplies the mean neighbour reflectance by the flat-terrain irradiance
+    and optionally by the sunlit neighbour fraction. ``neighbour_exitance``
+    averages each neighbour's reflectance times its own pre-exchange
+    irradiance, so incidence, cast shadows and sky view enter per neighbour
+    and the beam-visibility weighting is not applied. ``visible_exitance``
+    replaces the uniform window by view-factor weights restricted to
+    neighbours in line of sight, and iterates on each neighbour's complete
+    irradiance so that the solver converges to the radiosity solution for
+    that kernel scaled by ``ct``. Its rays reach
+    ``terrain_visibility_radius_m``, or the terrain-window half-width when
+    omitted. Because hidden and coplanar terrain receive no weight, the
+    radius can exceed the window without diluting the average.
     """
+
+    if terrain_reflection_method not in TERRAIN_REFLECTION_METHODS:
+        raise ValueError(
+            "terrain_reflection_method must be one of: "
+            + ", ".join(TERRAIN_REFLECTION_METHODS)
+        )
 
     if tw is None:
         tw = window_size_from_distance(
@@ -456,6 +497,10 @@ def iterative_radiance(
 
     r = np.zeros_like(bhr)
     r = np.expand_dims(r, axis=2)
+
+    # Unaveraged reflectance whose window mean is rt. The neighbour exitance
+    # uses it before averaging so that reflectance and irradiance covary.
+    terrain_reflectance = np.asarray(bhr, dtype=np.float64)
 
     l_toa = np.zeros_like(bhr)
     l_toa = np.expand_dims(l_toa, axis=2)
@@ -545,6 +590,31 @@ def iterative_radiance(
                 sky_view_factor=topo_bands["vt"],
             )
 
+    # Visible-exitance kernel inputs. The ray length defaults to the terrain
+    # window half-width.
+    if terrain_reflection_method == "visible_exitance":
+        missing = {"altitude", "slope", "aspect"}.difference(topo_bands)
+        if missing:
+            raise ValueError(
+                "visible_exitance requires topographic bands: "
+                + ", ".join(sorted(missing))
+            )
+        visibility_kernel = {
+            "altitude": topo_bands["altitude"].data,
+            "slope": topo_bands["slope"].data,
+            "aspect": topo_bands["aspect"].data,
+            "pixel_size": pixel_resolution_m,
+            "radius_pixels": (
+                tw // 2
+                if terrain_visibility_radius_m is None
+                else _radius_pixels_from_distance(
+                    terrain_visibility_radius_m, pixel_resolution_m
+                )
+            ),
+        }
+    visible_view_factor = np.nan
+    terrain_irradiance_previous = 0.0
+
     # Contribution of the neighbouring slopes to the satellite signal
     # Set to zero (modified in iteration for full run)
     # LtNa = LtGA + LtGGA + LtGAGA
@@ -581,13 +651,48 @@ def iterative_radiance(
         # The published REDRESS approximation multiplies the complete
         # neighbour reflectance by its mean direct-beam visibility. Disabling
         # this empirical weighting tests its effect independently of Ct.
-        if weight_terrain_by_neighbour_beam_visibility:
+        if (
+            weight_terrain_by_neighbour_beam_visibility
+            and terrain_reflection_method == "flat_irradiance"
+        ):
             terrain_illumination_weight = bb_nbh
         else:
             terrain_illumination_weight = 1.0
 
+        # Each pixel's own direct and sky irradiance before terrain exchange.
+        # Higher reflection orders are carried by the series denominator, so
+        # the terrain term itself is excluded to avoid counting them twice.
+        pre_exchange_irradiance = EdP + (EhP_flat + coupled_irradiance) * vd
+
         # Terrain contribution switch
-        if case.terrain_contribution:
+        if case.terrain_contribution and (
+            terrain_reflection_method == "neighbour_exitance"
+        ):
+            # Mean neighbour exitance replaces the flat irradiance times the
+            # mean neighbour reflectance (Sirguey et al. 2011, eq. 11).
+            neighbour_exitance = _window_mean(
+                terrain_reflectance * np.asarray(pre_exchange_irradiance),
+                tw,
+                boundary="nearest",
+            )
+            EtGP = topo_bands["ct"] * neighbour_exitance / (
+                1 - rt[:, :, i - 1] * ct_nbh
+            )
+        elif case.terrain_contribution and (
+            terrain_reflection_method == "visible_exitance"
+        ):
+            # Neighbours radiate their complete irradiance from the previous
+            # iteration, so each iteration adds one reflection order and no
+            # series denominator is needed.
+            neighbour_exitance, visible_view_factor = visible_neighbour_mean(
+                terrain_reflectance * np.asarray(
+                    pre_exchange_irradiance + terrain_irradiance_previous
+                ),
+                **visibility_kernel,
+            )
+            EtGP = topo_bands["ct"] * np.nan_to_num(neighbour_exitance)
+            terrain_irradiance_previous = np.asarray(EtGP)
+        elif case.terrain_contribution:
             # # Terrain re-illumination, eq. 18 substituted by eq. 11 from
             # # Sirguey et al. 2011
             # Terrain reflected irradiance
@@ -638,6 +743,7 @@ def iterative_radiance(
         r = np.dstack((r, r_currentstep))
 
         # Apply the averaging of the updated reflectance
+        terrain_reflectance = r[:, :, i]
         re_i = _window_mean(r[:, :, i], aw, boundary="nearest")
         re = np.dstack((re, re_i))
         rt_i = _window_mean(r[:, :, i], tw, boundary="nearest")
@@ -692,6 +798,8 @@ def iterative_radiance(
                 terrain_illumination_weight
             ),
             "terrain_neighbour_configuration_factor": ct_nbh,
+            "pre_exchange_irradiance": pre_exchange_irradiance,
+            "terrain_visible_view_factor": visible_view_factor,
         }
         diagnostics = {
             name: np.broadcast_to(

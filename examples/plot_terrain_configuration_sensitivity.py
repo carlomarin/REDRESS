@@ -25,6 +25,7 @@ from plot_idealized_radiance_decomposition import (
 
 METHODS = ("hemispheric_closure", "dozier_frew")
 NEIGHBOUR_BEAM_WEIGHTING = 1.0
+TERRAIN_REFLECTION_METHOD = "flat_irradiance"
 METHOD_LABELS = {
     "hemispheric_closure": "Hemispheric closure: Ct = 1 − Vd",
     "dozier_frew": "Dozier–Frew: Ct = (1 + cos S)/2 − Vd",
@@ -60,6 +61,10 @@ def select_sensitivity_records(records):
             "neighbour_beam_weighting",
             NEIGHBOUR_BEAM_WEIGHTING,
         ) == NEIGHBOUR_BEAM_WEIGHTING
+        and record.get(
+            "terrain_reflection_method",
+            TERRAIN_REFLECTION_METHOD,
+        ) == TERRAIN_REFLECTION_METHOD
     ]
     if not selected:
         raise ValueError("No terrain-configuration sensitivity records found")

@@ -53,6 +53,9 @@ GRID_SIZE = int(2 * DOMAIN_HALF_WIDTH_M / PIXEL_RESOLUTION_M) + 1
 HORIZON_HALF_DIRECTIONS = 32  # Produces 64 azimuth directions.
 
 TERRAIN_WINDOW_WIDTH_M = 1500.0
+# Ray length of the visible-exitance kernel. It spans the full 1 km valley
+# walls from any wall pixel, unlike the 750 m terrain-window half-width.
+TERRAIN_VISIBILITY_RADIUS_M = 3000.0
 ATMOSPHERE_WINDOW_WIDTH_M = 2100.0
 ATMOSPHERE_ALTITUDE_STEP_M = 250.0
 REFERENCE_MEAN_ALTITUDE_M = 2500.0
@@ -81,7 +84,15 @@ TERRAIN_CONFIGURATION_METHODS = (
     "hemispheric_closure",
     "dozier_frew",
 )
-NEIGHBOUR_BEAM_WEIGHTING_OPTIONS = (True, False)
+# Terrain-reflection approximations as (method, neighbour beam weighting).
+# The exitance methods carry shadows per neighbour, so the empirical beam
+# weighting does not apply to them.
+TERRAIN_REFLECTION_VARIANTS = (
+    ("flat_irradiance", True),
+    ("flat_irradiance", False),
+    ("neighbour_exitance", False),
+    ("visible_exitance", False),
+)
 PRIMARY_TERRAIN_CONFIGURATION_METHOD = "hemispheric_closure"
 
 # Illustrative Lambertian snow-free alpine ground. Values are surface
@@ -491,7 +502,7 @@ def wall_pre_exchange_irradiance(
     }
 
 
-def two_wall_benchmark_record(
+def two_wall_benchmark_records(
     terrain,
     topography,
     model,
@@ -499,12 +510,13 @@ def two_wall_benchmark_record(
     band_index,
     snow_fraction,
     terrain_configuration_method,
+    terrain_reflection_method,
     neighbour_beam_weighting,
     bhr,
     atmospheric_lookup,
     diagnostics,
 ):
-    """Compare REDRESS with a two-wall radiosity solution at one wall."""
+    """Compare REDRESS with a two-wall radiosity solution at both walls."""
 
     if not terrain.name.startswith("v_valley_"):
         return None
@@ -542,7 +554,6 @@ def two_wall_benchmark_record(
     local_infinite_factor = (
         symmetric_v_valley_local_wall_view_factor(wall_slope)
     )
-    raster_factor = float(topography["ct"].values[row_a, column_a])
     infinite_solution = solve_two_wall_irradiance(
         illumination_a["total"],
         illumination_b["total"],
@@ -550,35 +561,14 @@ def two_wall_benchmark_record(
         reflectance_a,
         reflectance_b,
     )
-    raster_solution = solve_two_wall_irradiance(
-        illumination_a["total"],
-        illumination_b["total"],
-        raster_factor,
-        reflectance_a,
-        reflectance_b,
-    )
-    redress_terrain = float(
-        diagnostics["terrain_reflected_irradiance"][row_a, column_a]
-    )
-    redress_flat_neighbour = float(
-        diagnostics["flat_direct_irradiance"][row_a, column_a]
-        + diagnostics["flat_diffuse_irradiance"][row_a, column_a]
-        + diagnostics["coupled_irradiance"][row_a, column_a]
-    )
-    raster_two_wall_terrain = float(
-        raster_solution["terrain_irradiance_a"]
-    )
-    infinite_two_wall_terrain = float(
-        infinite_solution["terrain_irradiance_a"]
-    )
-
-    return {
+    shared = {
         "terrain": terrain.name,
         "wall_slope_degree": wall_slope,
         "band": band,
         "wavelength_nm": model.meta["wavelengths"][band_index],
         "opposite_wall_snow_fraction": snow_fraction,
         "terrain_configuration_method": terrain_configuration_method,
+        "terrain_reflection_method": terrain_reflection_method,
         "neighbour_beam_weighting": int(neighbour_beam_weighting),
         "reflectance_a": reflectance_a,
         "reflectance_b": reflectance_b,
@@ -600,23 +590,64 @@ def two_wall_benchmark_record(
         "sky_diffuse_irradiance_b": illumination_b["sky_diffuse"],
         "pre_exchange_irradiance_a": illumination_a["total"],
         "pre_exchange_irradiance_b": illumination_b["total"],
-        "redress_flat_neighbour_irradiance": redress_flat_neighbour,
         "local_infinite_view_factor": local_infinite_factor,
-        "raster_view_factor": raster_factor,
-        "redress_terrain_irradiance": redress_terrain,
-        "two_wall_raster_terrain_irradiance": raster_two_wall_terrain,
-        "two_wall_infinite_terrain_irradiance": infinite_two_wall_terrain,
-        "redress_vs_raster_two_wall_percent": (
-            100.0 * (redress_terrain / raster_two_wall_terrain - 1.0)
-            if raster_two_wall_terrain != 0.0
-            else np.nan
-        ),
-        "redress_vs_infinite_two_wall_percent": (
-            100.0 * (redress_terrain / infinite_two_wall_terrain - 1.0)
-            if infinite_two_wall_terrain != 0.0
-            else np.nan
-        ),
     }
+
+    # Wall A faces away from the Sun and wall B faces toward it. Each
+    # record evaluates REDRESS at one wall against the matching side of the
+    # 2x2 solution, using that wall's own raster terrain factor.
+    records = []
+    for wall, row, column in (
+        ("A", row_a, column_a),
+        ("B", row_b, column_b),
+    ):
+        side = wall.lower()
+        raster_factor = float(topography["ct"].values[row, column])
+        raster_solution = solve_two_wall_irradiance(
+            illumination_a["total"],
+            illumination_b["total"],
+            raster_factor,
+            reflectance_a,
+            reflectance_b,
+        )
+        redress_terrain = float(
+            diagnostics["terrain_reflected_irradiance"][row, column]
+        )
+        redress_flat_neighbour = float(
+            diagnostics["flat_direct_irradiance"][row, column]
+            + diagnostics["flat_diffuse_irradiance"][row, column]
+            + diagnostics["coupled_irradiance"][row, column]
+        )
+        raster_two_wall_terrain = float(
+            raster_solution[f"terrain_irradiance_{side}"]
+        )
+        infinite_two_wall_terrain = float(
+            infinite_solution[f"terrain_irradiance_{side}"]
+        )
+        records.append({
+            **shared,
+            "wall": wall,
+            "redress_flat_neighbour_irradiance": redress_flat_neighbour,
+            "raster_view_factor": raster_factor,
+            "redress_terrain_irradiance": redress_terrain,
+            "two_wall_raster_terrain_irradiance": raster_two_wall_terrain,
+            "two_wall_infinite_terrain_irradiance": (
+                infinite_two_wall_terrain
+            ),
+            "redress_vs_raster_two_wall_percent": (
+                100.0 * (redress_terrain / raster_two_wall_terrain - 1.0)
+                if raster_two_wall_terrain != 0.0
+                else np.nan
+            ),
+            "redress_vs_infinite_two_wall_percent": (
+                100.0 * (
+                    redress_terrain / infinite_two_wall_terrain - 1.0
+                )
+                if infinite_two_wall_terrain != 0.0
+                else np.nan
+            ),
+        })
+    return records
 
 
 def simulate_cover(
@@ -624,6 +655,7 @@ def simulate_cover(
     terrain,
     opposite_wall_snow_fraction,
     terrain_configuration_method,
+    terrain_reflection_method,
     neighbour_beam_weighting,
     atmospheric_lookups,
 ):
@@ -692,6 +724,8 @@ def simulate_cover(
             weight_terrain_by_neighbour_beam_visibility=(
                 neighbour_beam_weighting
             ),
+            terrain_reflection_method=terrain_reflection_method,
+            terrain_visibility_radius_m=TERRAIN_VISIBILITY_RADIUS_M,
         )
         (
             _,
@@ -704,7 +738,7 @@ def simulate_cover(
             components[name].append(band_components[name])
         for name, values in band_diagnostics.items():
             diagnostics.setdefault(name, []).append(values)
-        benchmark = two_wall_benchmark_record(
+        benchmark = two_wall_benchmark_records(
             terrain,
             topography,
             model,
@@ -712,13 +746,14 @@ def simulate_cover(
             index,
             opposite_wall_snow_fraction,
             terrain_configuration_method,
+            terrain_reflection_method,
             neighbour_beam_weighting,
             bhr,
             atmospheric_lookups[band],
             band_diagnostics,
         )
         if benchmark is not None:
-            two_wall_records.append(benchmark)
+            two_wall_records.extend(benchmark)
 
     return (
         np.stack(reflectance, axis=0),
@@ -755,6 +790,7 @@ def raster_output_dataset(
     model,
     opposite_wall_snow_fraction,
     terrain_configuration_method,
+    terrain_reflection_method,
     neighbour_beam_weighting,
     reflectance,
 ):
@@ -764,6 +800,7 @@ def raster_output_dataset(
         f"{terrain.name}_wall_snow_"
         f"{opposite_wall_snow_fraction:.2f}_"
         f"{terrain_configuration_method}_"
+        f"{terrain_reflection_method}_"
         f"beam_weight_{int(neighbour_beam_weighting)}"
     )
     dataset = xr.Dataset(
@@ -791,6 +828,9 @@ def raster_output_dataset(
         terrain_configuration_method=(
             "experiment", [terrain_configuration_method]
         ),
+        terrain_reflection_method=(
+            "experiment", [terrain_reflection_method]
+        ),
         neighbour_beam_weighting=(
             "experiment", [neighbour_beam_weighting]
         ),
@@ -803,6 +843,7 @@ def sample_records(
     model,
     opposite_wall_snow_fraction,
     terrain_configuration_method,
+    terrain_reflection_method,
     neighbour_beam_weighting,
     reflectance,
     components,
@@ -826,6 +867,7 @@ def sample_records(
                 "terrain_configuration_method": (
                     terrain_configuration_method
                 ),
+                "terrain_reflection_method": terrain_reflection_method,
                 "neighbour_beam_weighting": int(
                     neighbour_beam_weighting
                 ),
@@ -1005,10 +1047,13 @@ def main():
         )
         for snow_fraction in cover_fractions:
             for method in TERRAIN_CONFIGURATION_METHODS:
-                for beam_weighting in NEIGHBOUR_BEAM_WEIGHTING_OPTIONS:
+                for reflection, beam_weighting in (
+                    TERRAIN_REFLECTION_VARIANTS
+                ):
                     print(
                         f"Running {terrain.label}; opposite-wall snow "
                         f"fraction={snow_fraction:.2f}; Ct={method}; "
+                        f"terrain reflection={reflection}; "
                         f"beam weighting={beam_weighting}"
                     )
                     (
@@ -1021,6 +1066,7 @@ def main():
                         terrain,
                         snow_fraction,
                         method,
+                        reflection,
                         beam_weighting,
                         atmospheric_lookups,
                     )
@@ -1030,6 +1076,7 @@ def main():
                         model,
                         snow_fraction,
                         method,
+                        reflection,
                         beam_weighting,
                         reflectance,
                     ))
@@ -1039,6 +1086,7 @@ def main():
                         model,
                         snow_fraction,
                         method,
+                        reflection,
                         beam_weighting,
                         reflectance,
                         components,
@@ -1056,6 +1104,7 @@ def main():
         pixel_resolution_m=PIXEL_RESOLUTION_M,
         horizon_directions=2 * HORIZON_HALF_DIRECTIONS,
         terrain_window_width_m=TERRAIN_WINDOW_WIDTH_M,
+        terrain_visibility_radius_m=TERRAIN_VISIBILITY_RADIUS_M,
         atmosphere_window_width_m=ATMOSPHERE_WINDOW_WIDTH_M,
         atmosphere_altitude_step_m=ATMOSPHERE_ALTITUDE_STEP_M,
         self_shadow_cosine_threshold=SELF_SHADOW_COSINE_THRESHOLD,
@@ -1065,7 +1114,10 @@ def main():
         terrain_configuration_sensitivity_methods=(
             ", ".join(TERRAIN_CONFIGURATION_METHODS)
         ),
-        neighbour_beam_weighting_sensitivity="enabled and disabled",
+        terrain_reflection_variants=", ".join(
+            f"{reflection} (beam weighting={int(weighting)})"
+            for reflection, weighting in TERRAIN_REFLECTION_VARIANTS
+        ),
     )
     rename_spatial_dimensions(topography).to_netcdf(TOPOGRAPHY_OUTPUT)
 
@@ -1083,7 +1135,10 @@ def main():
         primary_terrain_configuration_method=(
             PRIMARY_TERRAIN_CONFIGURATION_METHOD
         ),
-        neighbour_beam_weighting_sensitivity="enabled and disabled",
+        terrain_reflection_variants=", ".join(
+            f"{reflection} (beam weighting={int(weighting)})"
+            for reflection, weighting in TERRAIN_REFLECTION_VARIANTS
+        ),
     )
     rename_spatial_dimensions(reflectance_maps).to_netcdf(
         REFLECTANCE_OUTPUT

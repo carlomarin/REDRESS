@@ -17,6 +17,14 @@ from redress.topography.forward_model import (
     iterative_radiance,
     window_size_from_distance,
 )
+from redress.topography.dem_products import (
+    effective_zenith_angle,
+    horneslope,
+)
+from redress.topography.idealized import (
+    solve_two_wall_irradiance,
+    symmetric_v_valley,
+)
 
 
 def test_anisotropic_sky_factor_respects_sky_view_in_shadow():
@@ -328,6 +336,258 @@ def test_neighbour_beam_weighting_suppresses_complete_terrain_term():
         ][4, 4]
 
     assert terrain_irradiance[False] > terrain_irradiance[True]
+
+
+def _terrain_irradiance(topography, angles, **options):
+    case = Cases()
+    case.create_cases(3)
+    shape = topography["altitude"].shape
+    _, _, _, diagnostics = iterative_radiance(
+        topography,
+        angles,
+        wavelength=550.0,
+        hdr=np.full(shape, 0.5),
+        bhr=np.full(shape, 0.5),
+        rt_model=_CoupledAtmosphere,
+        rt_options={
+            "aerosol_model": "None",
+            "aod": 0.0,
+            "refl": 0.0,
+            "water": 0.0,
+            "ozone": 0.0,
+            "atmo_model": None,
+            "atcor": False,
+        },
+        brf=np.full(shape, 0.5),
+        case=case,
+        return_reflectance=True,
+        return_components=True,
+        return_diagnostics=True,
+        verbose=False,
+        **options,
+    )
+    return diagnostics["terrain_reflected_irradiance"]
+
+
+def test_neighbour_exitance_matches_flat_irradiance_on_uniform_terrain():
+    angles, topography = _uniform_geometry(45.0)
+    shape = topography["altitude"].shape
+    topography["ct"] = (("x", "y"), np.full(shape, 0.4))
+
+    flat = _terrain_irradiance(
+        topography,
+        angles,
+        terrain_reflection_method="flat_irradiance",
+    )
+    exitance = _terrain_irradiance(
+        topography,
+        angles,
+        terrain_reflection_method="neighbour_exitance",
+    )
+
+    np.testing.assert_allclose(exitance, flat, rtol=1e-10)
+
+
+def test_neighbour_exitance_keeps_diffuse_light_from_shaded_neighbours():
+    angles, topography = _uniform_geometry(45.0)
+    shape = topography["altitude"].shape
+    topography["ct"] = (("x", "y"), np.full(shape, 0.4))
+    visibility = np.ones(shape)
+    visibility[:, :4] = 0.0
+    topography["all_shadows"] = (("x", "y"), visibility)
+
+    weighted = _terrain_irradiance(
+        topography,
+        angles,
+        weight_terrain_by_neighbour_beam_visibility=True,
+    )[4, 4]
+    unweighted = _terrain_irradiance(
+        topography,
+        angles,
+        weight_terrain_by_neighbour_beam_visibility=False,
+    )[4, 4]
+    exitance = _terrain_irradiance(
+        topography,
+        angles,
+        terrain_reflection_method="neighbour_exitance",
+    )[4, 4]
+
+    assert weighted < exitance < unweighted
+
+
+def test_unknown_terrain_reflection_method_is_rejected():
+    angles, topography = _uniform_geometry(45.0)
+
+    with pytest.raises(ValueError, match="terrain_reflection_method"):
+        _terrain_irradiance(
+            topography,
+            angles,
+            terrain_reflection_method="view_factor",
+        )
+
+
+def _v_valley_geometry(wall_slope_degree, terrain_factor):
+    resolution = 20.0
+    terrain = symmetric_v_valley(
+        41, resolution, wall_slope_degree, wall_extent_m=400.0
+    )
+    altitude = terrain.elevation_m
+    slope, aspect = horneslope(altitude, (resolution, resolution))
+    # Replicate the interior slope and aspect into the undefined border.
+    slope = np.pad(slope[1:-1, 1:-1], 1, mode="edge")
+    aspect = np.pad(aspect[1:-1, 1:-1], 1, mode="edge")
+    shape = altitude.shape
+    global_sza = np.deg2rad(45.0)
+    zeros = np.zeros(shape, dtype=np.float64)
+    angles = xr.Dataset({
+        "SZA": (("x", "y"), np.full(shape, global_sza)),
+        "SAA": (("x", "y"), np.full(shape, np.pi)),
+        "VZA": (("x", "y"), zeros.copy()),
+        "VAA": (("x", "y"), zeros.copy()),
+    })
+    topography = xr.Dataset({
+        "altitude": (("x", "y"), altitude),
+        "slope": (("x", "y"), slope),
+        "aspect": (("x", "y"), aspect),
+        "eff_sza": (
+            ("x", "y"),
+            effective_zenith_angle(global_sza, np.pi, slope, aspect),
+        ),
+        "eff_vza": (("x", "y"), zeros.copy()),
+        "vt": (("x", "y"), np.ones(shape)),
+        "ct": (("x", "y"), np.full(shape, terrain_factor)),
+        "all_shadows": (("x", "y"), np.ones(shape)),
+    })
+    return terrain, angles, topography, resolution
+
+
+def test_visible_exitance_converges_to_the_two_wall_solution():
+    terrain_factor = 0.3
+    reflectance = 0.5
+    terrain, angles, topography, resolution = _v_valley_geometry(
+        45.0, terrain_factor
+    )
+    case = Cases()
+    case.create_cases(3)
+    shape = topography["altitude"].shape
+    _, _, _, diagnostics = iterative_radiance(
+        topography,
+        angles,
+        wavelength=550.0,
+        hdr=np.full(shape, reflectance),
+        bhr=np.full(shape, reflectance),
+        rt_model=_CoupledAtmosphere,
+        rt_options={
+            "aerosol_model": "None",
+            "aod": 0.0,
+            "refl": 0.0,
+            "water": 0.0,
+            "ozone": 0.0,
+            "atmo_model": None,
+            "atcor": False,
+        },
+        brf=np.full(shape, reflectance),
+        case=case,
+        return_reflectance=True,
+        return_components=True,
+        return_diagnostics=True,
+        verbose=False,
+        pixel_resolution_m=resolution,
+        terrain_window_width_m=600.0,
+        terrain_reflection_method="visible_exitance",
+    )
+    row_a = int(np.argmin(np.abs(terrain.northing_m + 200.0)))
+    row_b = int(np.argmin(np.abs(terrain.northing_m - 200.0)))
+    column = shape[1] // 2
+    pre_exchange = diagnostics["pre_exchange_irradiance"]
+    expected = solve_two_wall_irradiance(
+        pre_exchange[row_a, column],
+        pre_exchange[row_b, column],
+        terrain_factor,
+        reflectance,
+        reflectance,
+    )
+    terrain_irradiance = diagnostics["terrain_reflected_irradiance"]
+
+    # The valley crease is a flat pixel with its own irradiance and is the
+    # only departure from two uniform walls.
+    assert terrain_irradiance[row_a, column] == pytest.approx(
+        expected["terrain_irradiance_a"], rel=0.02
+    )
+    assert terrain_irradiance[row_b, column] == pytest.approx(
+        expected["terrain_irradiance_b"], rel=0.02
+    )
+
+
+@pytest.mark.parametrize("radius", [0.0, -20.0, np.nan])
+def test_visible_exitance_rejects_invalid_radius(radius):
+    _, angles, topography, resolution = _v_valley_geometry(45.0, 0.3)
+
+    with pytest.raises(ValueError, match="terrain_visibility_radius_m"):
+        _terrain_irradiance(
+            topography,
+            angles,
+            pixel_resolution_m=resolution,
+            terrain_reflection_method="visible_exitance",
+            terrain_visibility_radius_m=radius,
+        )
+
+
+def test_visible_exitance_radius_is_independent_of_terrain_window():
+    terrain, angles, topography, resolution = _v_valley_geometry(45.0, 0.3)
+    row_a = int(np.argmin(np.abs(terrain.northing_m + 200.0)))
+    column = topography["altitude"].shape[1] // 2
+    view_factor = {}
+
+    for radius in (None, 800.0):
+        case = Cases()
+        case.create_cases(3)
+        shape = topography["altitude"].shape
+        _, _, _, diagnostics = iterative_radiance(
+            topography,
+            angles,
+            wavelength=550.0,
+            hdr=np.full(shape, 0.5),
+            bhr=np.full(shape, 0.5),
+            rt_model=_CoupledAtmosphere,
+            rt_options={
+                "aerosol_model": "None",
+                "aod": 0.0,
+                "refl": 0.0,
+                "water": 0.0,
+                "ozone": 0.0,
+                "atmo_model": None,
+                "atcor": False,
+            },
+            brf=np.full(shape, 0.5),
+            case=case,
+            return_reflectance=True,
+            return_components=True,
+            return_diagnostics=True,
+            verbose=False,
+            pixel_resolution_m=resolution,
+            terrain_window_width_m=600.0,
+            terrain_reflection_method="visible_exitance",
+            terrain_visibility_radius_m=radius,
+        )
+        view_factor[radius] = diagnostics[
+            "terrain_visible_view_factor"
+        ][row_a, column]
+
+    # The default 300 m rays reach only the lowest 100 m of the opposite
+    # wall; 800 m rays span all of it.
+    assert view_factor[800.0] > 2.0 * view_factor[None] > 0.0
+
+
+def test_visible_exitance_requires_slope_and_aspect():
+    angles, topography = _uniform_geometry(45.0)
+
+    with pytest.raises(ValueError, match="slope"):
+        _terrain_irradiance(
+            topography,
+            angles,
+            terrain_reflection_method="visible_exitance",
+        )
 
 
 def test_local_incidence_cosine_scales_every_wavelength_equally():
