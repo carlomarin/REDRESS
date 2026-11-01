@@ -22,6 +22,7 @@ from redress.inputs.products import Dem
 from redress.topography.idealized import (
     solve_two_wall_irradiance,
     symmetric_v_valley,
+    uniform_slope,
     symmetric_v_valley_local_wall_view_factor,
     symmetric_v_valley_wall_view_factor,
 )
@@ -390,3 +391,27 @@ def test_visible_neighbour_mean_is_undefined_on_a_plane():
 
     assert np.all(view_factor == 0.0)
     assert np.all(np.isnan(mean))
+
+
+def test_visible_neighbour_mean_ignores_coplanar_neighbours():
+    resolution = 20.0
+    plane = uniform_slope(41, resolution, 25.0, 0.0)
+    valley = symmetric_v_valley(41, resolution, 55.0, wall_extent_m=300.0)
+
+    for terrain, row in ((plane, 20), (valley, 20)):
+        slope, aspect = horneslope(
+            terrain.elevation_m, (resolution, resolution)
+        )
+        mean, view_factor = visible_neighbour_mean(
+            np.ones_like(terrain.elevation_m),
+            terrain.elevation_m,
+            slope,
+            aspect,
+            resolution,
+            radius_pixels=15,
+        )
+
+        # A tilted plane and the crease of a V only see their own planes
+        # edge-on, so no rounding residual may define a mean.
+        assert view_factor[row, 20] == 0.0
+        assert np.isnan(mean[row, 20])

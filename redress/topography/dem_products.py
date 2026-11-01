@@ -437,6 +437,11 @@ def art_relative_azimuth(geometric_relative_azimuth):
 
 
 
+# Cosine below which a neighbour is treated as seen edge-on. It corresponds
+# to about 6e-5 degrees and only removes rounding residuals.
+_GRAZING_COSINE = 1e-6
+
+
 @njit(parallel=True)
 def _visible_neighbour_sums(
     values,
@@ -501,7 +506,13 @@ def _visible_neighbour_sums(
                         + normal_north[target_row, target_col] * ray_north
                         + normal_up[target_row, target_col] * ray_up
                     )
-                    if not (cos_source > 0.0 and cos_target > 0.0):
+                    # Coplanar neighbours are seen edge-on. Rounding leaves
+                    # their cosines near 1e-16, which would otherwise define
+                    # the normalised mean wherever nothing else is visible.
+                    if not (
+                        cos_source > _GRAZING_COSINE
+                        and cos_target > _GRAZING_COSINE
+                    ):
                         continue
                     finite = True
                     for field in range(n_fields):
@@ -542,9 +553,9 @@ def visible_neighbour_mean(
     Rays are marched from every pixel in ``n_directions`` azimuths, one pixel
     per step, out to ``radius_pixels``. A neighbour contributes only when it
     lies on or above the running elevation-angle maximum along the ray and
-    both surfaces face each other. Its weight is the view-factor element
-    ``cos(theta_P) cos(theta_Q) dA / (pi d^2)``, so coplanar, hidden and
-    back-facing terrain receive no weight.
+    both surfaces face each other beyond a rounding tolerance. Its weight is
+    the view-factor element ``cos(theta_P) cos(theta_Q) dA / (pi d^2)``, so
+    coplanar, hidden and back-facing terrain receive no weight.
 
     Args:
         values (ndarray): Field(s) to average, shaped (rows, cols) or

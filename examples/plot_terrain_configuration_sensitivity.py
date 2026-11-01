@@ -24,8 +24,8 @@ from plot_idealized_radiance_decomposition import (
 
 
 METHODS = ("hemispheric_closure", "dozier_frew")
-NEIGHBOUR_BEAM_WEIGHTING = 1.0
-TERRAIN_REFLECTION_METHOD = "flat_irradiance"
+NEIGHBOUR_BEAM_WEIGHTING = 0.0
+TERRAIN_REFLECTION_METHOD = "visible_exitance"
 METHOD_LABELS = {
     "hemispheric_closure": "Hemispheric closure: Ct = 1 − Vd",
     "dozier_frew": "Dozier–Frew: Ct = (1 + cos S)/2 − Vd",
@@ -113,8 +113,8 @@ def figure_caption():
         "All-snow idealized-terrain experiments with full REDRESS case 5. "
         "Atmospheric quantities are interpolated from Py6S elevation nodes "
         "with a maximum spacing of 250 m. "
-        "The published neighbour beam-visibility weighting is active in both "
-        "configuration-factor experiments. "
+        "Terrain-reflected irradiance uses visible view-factor exitance with "
+        "3 km rays in both configuration-factor experiments. "
         "The primary hemispheric convention treats sky and terrain as the "
         "complete outward hemisphere, Ct=1−Vd. The Dozier–Frew sensitivity "
         "omits the downslope fraction (1−cos S)/2. Black crosses in panel "

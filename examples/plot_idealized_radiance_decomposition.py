@@ -36,8 +36,8 @@ OUTPUT_PDF = Path(
 BANDS = ("B03", "B08", "B11")
 OPPOSITE_WALL_SNOW_FRACTION = 1.0
 TERRAIN_CONFIGURATION_METHOD = "hemispheric_closure"
-NEIGHBOUR_BEAM_WEIGHTING = 1.0
-TERRAIN_REFLECTION_METHOD = "flat_irradiance"
+NEIGHBOUR_BEAM_WEIGHTING = 0.0
+TERRAIN_REFLECTION_METHOD = "visible_exitance"
 SUNLIT_VISIBILITY_THRESHOLD = 0.5
 
 TERRAIN_ORDER = (
@@ -293,7 +293,8 @@ def figure_caption():
         "Full REDRESS case 5 over analytical DEMs; snow SSA=20 m² kg⁻¹, "
         "global SZA=45°, and the designated opposite wall is fully snow "
         "covered. Terrain configuration uses hemispheric closure, Ct=1−Vd. "
-        "The published REDRESS neighbour beam-visibility weighting is active. "
+        "Terrain-reflected irradiance uses visible view-factor exitance with "
+        "3 km rays. "
         "Atmospheric quantities are linearly interpolated from Py6S runs "
         "with a maximum elevation spacing of 250 m. "
         "Each radiance component is expressed on the TOA-reflectance "
