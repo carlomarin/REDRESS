@@ -143,15 +143,27 @@ def record_lookup(records):
     }
 
 
+def format_percent(value):
+    """Format a relative difference compactly for a bar label."""
+
+    if abs(value) >= 100.0:
+        return f"{value:+.0f}%"
+    return f"{value:+.1f}%"
+
+
 def draw_bars(axis, x_position, series):
-    """Draw grouped bars from (values, label, color) and return the maximum."""
+    """Draw grouped bars and return the maximum bar height.
+
+    Each series is (values, label, color, percents); percents is None or
+    the per-bar difference from the reference, printed above each bar.
+    """
 
     maximum = 0.0
-    for index, (values, label, color) in enumerate(series):
+    for index, (values, label, color, percents) in enumerate(series):
         values = np.asarray(values, dtype=np.float64)
         maximum = max(maximum, float(np.nanmax(values)))
         offset = (index - (len(series) - 1) / 2.0) * BAR_WIDTH
-        axis.bar(
+        bars = axis.bar(
             x_position + offset,
             values,
             width=BAR_WIDTH,
@@ -160,6 +172,15 @@ def draw_bars(axis, x_position, series):
             edgecolor="white",
             linewidth=0.5,
         )
+        if percents is not None:
+            axis.bar_label(
+                bars,
+                labels=[format_percent(value) for value in percents],
+                padding=2,
+                rotation=90,
+                fontsize=6.5,
+                color=color,
+            )
     return maximum
 
 
@@ -188,6 +209,10 @@ def wall_series(lookup, band, slopes, wall):
             ],
             label,
             color,
+            [
+                record["redress_vs_raster_two_wall_percent"]
+                for record in variant_records[(reflection, weighting)]
+            ],
         )
         for reflection, weighting, label, color in REDRESS_VARIANTS
     ]
@@ -199,6 +224,7 @@ def wall_series(lookup, band, slopes, wall):
             [record[field] for record in reference_records],
             label,
             color,
+            None,
         )
         for field, label, color in REFERENCE_FIELDS
     )
@@ -253,8 +279,9 @@ def figure_caption():
         "the uniform terrain window, and the visible exitance term, which "
         "weights neighbours by their line-of-sight view-factor element and "
         "iterates on their complete irradiance, with rays reaching 3 km. The "
-        "raster-F reference uses the same local Ct, so the remaining "
-        "difference of the visible variant measures the non-uniform "
+        "raster-F reference uses the same local Ct; the percentage above "
+        "each REDRESS bar is its difference from this reference, and the "
+        "remaining difference of the visible variant measures the non-uniform "
         "irradiance along each wall. The infinite-wall reference uses "
         "F=sin²β. Atmospheric quantities are interpolated from Py6S "
         "elevation nodes spaced by at most 250 m."
@@ -297,6 +324,7 @@ def plot_benchmark(records):
                     [record[field] for record in illumination_records],
                     label,
                     color,
+                    None,
                 )
                 for field, label, color in ILLUMINATION_FIELDS
             ],
@@ -308,7 +336,8 @@ def plot_benchmark(records):
                 x_position,
                 wall_series(lookup, band, slopes, wall),
             )
-            axes[row, column].set_ylim(0.0, 1.15 * wall_maximum)
+            # Headroom for the rotated percent labels above the bars.
+            axes[row, column].set_ylim(0.0, 1.32 * wall_maximum)
         axes[0, column].set_title(band, fontweight="bold")
         axes[-1, column].set_xticks(x_position)
         axes[-1, column].set_xticklabels(
