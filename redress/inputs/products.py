@@ -9,7 +9,7 @@ from datetime import date
 import xarray as xr
 import numpy as np
 from scipy.ndimage import median_filter
-from redress.topography.horizon import dozier_horizon
+from redress.topography.horizon import dozier_horizon, ray_march_horizon
 from redress.topography import dem_products
 from redress.optics import snow
 from redress.inputs.sentinel2 import sentinel2_metadata
@@ -88,24 +88,35 @@ class Dem(object):
         self.pixel_size = None
         self.angles = xr.Dataset()
 
-    def compute_horizon(self, N=32, spatial_filter_size=None):
+    def compute_horizon(self, N=32, spatial_filter_size=None,
+                        method="ray_march"):
         """Compute horizon elevation and distance.
 
-        The algorithm, based on Dozier et al. (1981) calculates the elevation
-         and distance to the horizon for each pixel in a DEM, for a number of
-        directions. Sirguey et al., 2009 showed although Dozier et al. 1981
-        suggested that 32 directions were sufficient to obtain a decent skyview
-        factor, 64 directions help obtain a more accurate representation of
-        shadows. Here N results in 2N directions (N32 = 64 directions).
+        The elevation and distance to the horizon are calculated for each
+        pixel in a DEM, for a number of directions. Sirguey et al., 2009
+        showed although Dozier et al. 1981 suggested that 32 directions were
+        sufficient to obtain a decent skyview factor, 64 directions help
+        obtain a more accurate representation of shadows. Here N results in
+        2N directions (N32 = 64 directions).
+
+        ``method="ray_march"`` samples the DEM by bilinear interpolation
+        along each exact azimuth. ``method="dozier"`` uses the profile
+        algorithm of Dozier et al. (1981), which rounds pixels onto
+        profiles; on steep oblique slopes it can pair a pixel with a
+        sideways neighbour a few metres ahead and report horizons tens of
+        degrees too high, seen as isolated false cast shadows.
 
         Args:
             dem (self): dem object
             N (int): Number of directions to be calculated divided by 2.
+            method (str): "ray_march" or "dozier".
 
         """
 
         if not isinstance(N, int) or N < 2:
             raise ValueError("N must be an integer greater than or equal to 2")
+        if method not in ("ray_march", "dozier"):
+            raise ValueError("method must be 'ray_march' or 'dozier'")
 
         # Test if the pixels are square
         if not np.isclose(
@@ -141,15 +152,25 @@ class Dem(object):
                      dtype=np.float32,
                      )
 
-        # Run the horizon algorithm for each direction
-        for ii in range(1, N + 1, 1):
-            phi = (ii - 1) * np.pi / N
-            ehtemp, dhtemp = dozier_horizon(altitude,
-                                            abs(self.pixel_size[0]), phi)
-            dh[ii - 1, :, :] = dhtemp[0, :, :]
-            eh[ii - 1, :, :] = ehtemp[0, :, :]
-            dh[ii - 1 + N, :, :] = dhtemp[1, :, :]
-            eh[ii - 1 + N, :, :] = ehtemp[1, :, :]
+        # Slices run from south towards decreasing compass azimuth.
+        horizon_azimuth = np.mod(
+            np.pi - np.arange(2 * N) * np.pi / N,
+            2.0 * np.pi,
+        )
+        if method == "ray_march":
+            eh[:], dh[:] = ray_march_horizon(
+                altitude, abs(self.pixel_size[0]), horizon_azimuth
+            )
+        else:
+            # Run the horizon algorithm for each direction
+            for ii in range(1, N + 1, 1):
+                phi = (ii - 1) * np.pi / N
+                ehtemp, dhtemp = dozier_horizon(altitude,
+                                                abs(self.pixel_size[0]), phi)
+                dh[ii - 1, :, :] = dhtemp[0, :, :]
+                eh[ii - 1, :, :] = ehtemp[0, :, :]
+                dh[ii - 1 + N, :, :] = dhtemp[1, :, :]
+                eh[ii - 1 + N, :, :] = ehtemp[1, :, :]
 
         if spatial_filter_size is not None:
             if (
@@ -165,10 +186,6 @@ class Dem(object):
             dh = median_filter(dh, size=filter_shape)
 
         # Convert numpy arrays to xarray
-        horizon_azimuth = np.mod(
-            np.pi - np.arange(2 * N) * np.pi / N,
-            2.0 * np.pi,
-        )
         self.bands["horizon_ele"] = xr.DataArray(
             eh,
             dims=['phi', 'x', 'y'],

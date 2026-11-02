@@ -3,6 +3,7 @@
 """
 Unittests for the topography module
 """
+import pytest
 from pytest import approx
 import numpy as np
 import xarray as xr
@@ -487,3 +488,66 @@ def test_spatial_coords_drop_the_horizon_azimuth():
     assert set(coords) == {"x", "y"}
     output = xr.DataArray(np.ones((3, 4)), dims=["x", "y"], coords=coords)
     assert output.shape == (3, 4)
+
+
+def _compass_azimuths(n_half):
+    return np.mod(np.pi - np.arange(2 * n_half) * np.pi / n_half, 2 * np.pi)
+
+
+def test_ray_march_horizon_is_exact_on_a_tilted_plane():
+    from redress.topography.horizon import ray_march_horizon
+
+    resolution, slope, aspect = 20.0, np.deg2rad(35.0), np.deg2rad(160.0)
+    rows, columns = np.mgrid[0:41, 0:41].astype(float)
+    # Aspect is the downslope direction; rows increase southward.
+    altitude = -np.tan(slope) * (
+        columns * resolution * np.sin(aspect)
+        - rows * resolution * np.cos(aspect)
+    )
+    azimuth = _compass_azimuths(32)
+
+    elevation, _ = ray_march_horizon(altitude, resolution, azimuth)
+
+    expected = np.degrees(np.arctan(np.maximum(
+        0.0, -np.tan(slope) * np.cos(azimuth - aspect)
+    )))
+    np.testing.assert_allclose(
+        elevation[:, 8:-8, 8:-8],
+        np.broadcast_to(expected[:, None, None], (64, 25, 25)),
+        atol=1e-9,
+    )
+
+
+def test_ray_march_horizon_matches_the_v_valley_geometry():
+    from redress.topography.horizon import ray_march_horizon
+
+    terrain = symmetric_v_valley(201, 20.0, 45.0, wall_extent_m=1000.0)
+    row = int(np.argmin(np.abs(terrain.northing_m + 500.0)))
+    azimuth = np.array([0.0, np.pi])
+
+    elevation, distance = ray_march_horizon(
+        terrain.elevation_m, 20.0, azimuth
+    )
+
+    # Across the valley the rim of the opposite wall sets the horizon;
+    # upslope the wall itself does.
+    across = np.degrees(np.arctan(500.0 / 1500.0))
+    assert elevation[0, row, 100] == approx(across, abs=0.1)
+    assert distance[0, row, 100] == approx(1500.0, abs=40.0)
+    assert elevation[1, row, 100] == approx(45.0, abs=1e-6)
+
+
+def test_dem_horizon_defaults_to_ray_marching():
+    terrain = symmetric_v_valley(41, 20.0, 45.0, wall_extent_m=300.0)
+    dem = Dem()
+    dem.bands["altitude"] = xr.DataArray(terrain.elevation_m, dims=("x", "y"))
+    dem.pixel_size = (20.0, -20.0)
+
+    dem.compute_horizon(N=8)
+    ray = dem.bands["horizon_ele"].values.copy()
+    dem.compute_horizon(N=8, method="dozier")
+
+    assert ray.shape == (16, 41, 41)
+    assert not np.array_equal(ray, dem.bands["horizon_ele"].values)
+    with pytest.raises(ValueError, match="method"):
+        dem.compute_horizon(N=8, method="unknown")

@@ -17,7 +17,7 @@ NB: Numba is used to speed up the process.
 """
 from math import pi, cos, sin, sqrt, atan, degrees
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 
 def queues(phi, B):
@@ -277,3 +277,110 @@ def dozier_horizon(dem_array, dem_pixel_size, phi):
                 )
     return Eh, Dh
 
+
+
+@njit(cache=True)
+def _bilinear(altitude, row, column):
+    """Bilinear elevation at a fractional row and column inside the grid."""
+
+    rows, columns = altitude.shape
+    row0 = min(int(row), rows - 2)
+    column0 = min(int(column), columns - 2)
+    row_weight = row - row0
+    column_weight = column - column0
+    top = (
+        (1.0 - column_weight) * altitude[row0, column0]
+        + column_weight * altitude[row0, column0 + 1]
+    )
+    bottom = (
+        (1.0 - column_weight) * altitude[row0 + 1, column0]
+        + column_weight * altitude[row0 + 1, column0 + 1]
+    )
+    return (1.0 - row_weight) * top + row_weight * bottom
+
+
+@njit(parallel=True, cache=True)
+def _ray_march_horizons(
+    altitude, pixel_size, azimuths, minimum_step, step_growth,
+):
+    directions = azimuths.size
+    rows, columns = altitude.shape
+    elevation = np.zeros((directions, rows, columns))
+    distance = np.zeros((directions, rows, columns))
+    for task in prange(directions * rows):
+        direction = task // rows
+        row = task % rows
+        # Rows increase southward and columns eastward.
+        row_step = -cos(azimuths[direction])
+        column_step = sin(azimuths[direction])
+        for column in range(columns):
+            origin = altitude[row, column]
+            best_tangent = 0.0
+            best_distance = 0.0
+            travelled = minimum_step
+            last_inside = 0.0
+            while True:
+                sample_row = row + row_step * travelled
+                sample_column = column + column_step * travelled
+                if (
+                    sample_row < 0.0 or sample_row > rows - 1
+                    or sample_column < 0.0 or sample_column > columns - 1
+                ):
+                    break
+                last_inside = travelled
+                tangent = (
+                    _bilinear(altitude, sample_row, sample_column) - origin
+                ) / (travelled * pixel_size)
+                if tangent > best_tangent:
+                    best_tangent = tangent
+                    best_distance = travelled
+                travelled += max(minimum_step, step_growth * travelled)
+            elevation[direction, row, column] = degrees(atan(best_tangent))
+            # Without a rising horizon, report the distance to the DEM edge.
+            if best_distance == 0.0:
+                best_distance = last_inside
+            distance[direction, row, column] = best_distance * pixel_size
+    return elevation, distance
+
+
+def ray_march_horizon(
+    dem_array,
+    dem_pixel_size,
+    azimuths,
+    minimum_step_pixels=0.5,
+    step_growth=0.01,
+):
+    """Horizon elevation and distance by marching along exact azimuths.
+
+    From every pixel, elevations are sampled by bilinear interpolation along
+    a straight line at each compass azimuth (radians, clockwise from north)
+    until the DEM edge. Unlike the Dozier profile algorithm, which groups
+    pixels into rounded profiles and can pair a pixel with a sideways
+    neighbour only metres ahead, every sample lies on the pixel's own line.
+    The step starts at ``minimum_step_pixels`` and grows by ``step_growth``
+    times the distance travelled.
+
+    Returns horizon elevation in degrees, never below zero, and the
+    horizontal distance to the horizon in metres, both shaped
+    (direction, row, column).
+    """
+
+    altitude = np.ascontiguousarray(dem_array, dtype=np.float64)
+    if altitude.ndim != 2 or min(altitude.shape) < 2:
+        raise ValueError("dem_array must be a 2-D grid of at least 2 by 2")
+    if not np.all(np.isfinite(altitude)):
+        raise ValueError("dem_array must not contain missing elevations")
+    if not dem_pixel_size > 0.0:
+        raise ValueError("dem_pixel_size must be positive")
+    if not minimum_step_pixels > 0.0 or step_growth < 0.0:
+        raise ValueError(
+            "minimum_step_pixels must be positive and step_growth "
+            "non-negative"
+        )
+    return _ray_march_horizons(
+        altitude,
+        float(dem_pixel_size),
+        np.ascontiguousarray(azimuths, dtype=np.float64),
+        float(minimum_step_pixels),
+        float(step_growth),
+    )
