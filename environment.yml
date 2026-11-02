@@ -27,6 +27,9 @@ dependencies:
   - libgdal-grib
   - pyproj>=3.6
   - geojson>=3
+  # Pillow reads the Sentinel-2 L1C JPEG 2000 bands; the conda-forge build
+  # includes OpenJPEG, unlike this GDAL build.
+  - pillow
 
   # Xarray file backends and development tools
   - netcdf4
@@ -40,3 +43,5 @@ dependencies:
   # Packages not currently distributed through conda-forge.
   - pip:
       - snowoptics==0.99.2
+      # Pure Python; its numpy and scipy come from conda-forge above.
+      - tartes==2.0.3
