@@ -358,11 +358,42 @@ def _sample_field(
 
     from osgeo import gdal
 
+    if gdal.GetDriverByName("GRIB") is None:
+        raise RuntimeError(
+            "GDAL has no GRIB raster driver. Sentinel-2 AUX_ECMWFT and "
+            "AUX_CAMS are GRIB files. In the redress conda environment, "
+            "install it with: mamba install -c conda-forge libgdal-grib"
+        )
+
     errors = []
     for path in paths:
-        dataset = gdal.Open(str(path), gdal.GA_ReadOnly)
+        try:
+            with path.open("rb") as stream:
+                signature = stream.read(4)
+        except OSError as error:
+            errors.append(f"{path}: cannot read file header: {error}")
+            continue
+        if signature != b"GRIB":
+            errors.append(
+                f"{path}: expected a GRIB auxiliary file; found signature "
+                f"{signature!r}"
+            )
+            continue
+
+        try:
+            dataset = gdal.OpenEx(
+                str(path),
+                gdal.OF_RASTER | gdal.OF_READONLY,
+                allowed_drivers=["GRIB"],
+            )
+        except RuntimeError as error:
+            errors.append(f"{path}: GDAL GRIB driver error: {error}")
+            continue
         if dataset is None:
-            errors.append(f"{path}: GDAL could not open the file")
+            detail = gdal.GetLastErrorMsg() or "no diagnostic was returned"
+            errors.append(
+                f"{path}: GDAL GRIB driver could not open the file: {detail}"
+            )
             continue
         bands = tuple(_matching_bands(dataset, aliases))
         if len(bands) != 1:

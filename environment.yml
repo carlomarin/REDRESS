@@ -22,6 +22,9 @@ dependencies:
   # Geospatial stack. Installing GDAL from conda-forge keeps its Python
   # bindings and native GDAL library mutually compatible.
   - gdal>=3.8
+  # Conda-forge distributes the GRIB raster driver separately from GDAL.
+  # It is required to read Sentinel-2 AUX_ECMWFT and AUX_CAMS files.
+  - libgdal-grib
   - pyproj>=3.6
   - geojson>=3
 
