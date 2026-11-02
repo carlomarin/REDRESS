@@ -31,8 +31,20 @@ AEROSOL_SCALE_HEIGHT_M = 1500.0
 CAMS_BASELINE = (4, 0)
 
 _ECMWF_FIELDS = {
-    "water": ("tcwv", "totalcolumnwatervapour", "totalcolumnwater"),
-    "ozone": ("tco3", "totalcolumnozone"),
+    "water": (
+        "tcwv",
+        "pwat",
+        "precipitablewater",
+        "precipitablewatercontent",
+        "totalcolumnwatervapour",
+        "totalcolumnwater",
+    ),
+    "ozone": ("tco3", "tozne", "totalozone", "totalcolumnozone"),
+}
+_ECMWF_EMBEDDED_BANDS = {
+    # Fixed layout of the six-band Sentinel-2 tile-level AUX_ECMWFT product.
+    "water": 1,
+    "ozone": 3,
 }
 _CAMS_FIELDS = {
     "aod550": ("aod550", "totalaerosolopticaldepthat550nm"),
@@ -44,6 +56,16 @@ _CAMS_FIELDS = {
     ),
     "sea_salt": ("ssaod550", "seasaltaerosolopticaldepthat550nm"),
     "sulphate": ("suaod550", "sulphateaerosolopticaldepthat550nm"),
+}
+_CAMS_EMBEDDED_BANDS = {
+    # Fixed layout of the eleven-band Sentinel-2 AUX_CAMS product.
+    "surface_geopotential": 1,
+    "aod550": 3,
+    "black_carbon": 7,
+    "dust": 8,
+    "organic_matter": 9,
+    "sea_salt": 10,
+    "sulphate": 11,
 }
 
 
@@ -353,8 +375,17 @@ def _sample_field(
     paths: Sequence[Path],
     aliases: Sequence[str],
     site: Sentinel2Site,
+    *,
+    fallback_band: int | None = None,
+    fallback_product_prefix: str | None = None,
+    fallback_raster_count: int | None = None,
 ) -> _Sample:
-    """Sample a named field from the granule covering the site."""
+    """Sample a named field from the granule covering the site.
+
+    Metadata aliases remain the primary selector. ``fallback_band`` is used
+    only for a recognized product with a documented fixed layout, because
+    GDAL versions expose different names for some GRIB1 parameters.
+    """
 
     from osgeo import gdal
 
@@ -396,10 +427,26 @@ def _sample_field(
             )
             continue
         bands = tuple(_matching_bands(dataset, aliases))
+        if (
+            len(bands) == 0
+            and fallback_band is not None
+            and fallback_product_prefix is not None
+            and path.name.startswith(fallback_product_prefix)
+            and (
+                fallback_raster_count is None
+                or dataset.RasterCount == fallback_raster_count
+            )
+            and 1 <= fallback_band <= dataset.RasterCount
+        ):
+            bands = (dataset.GetRasterBand(fallback_band),)
         if len(bands) != 1:
             errors.append(
                 f"{path}: expected one field matching {tuple(aliases)}; "
-                f"found {len(bands)}"
+                f"found {len(bands)}. Available bands: "
+                + "; ".join(
+                    f"{index}={_band_identifiers(dataset.GetRasterBand(index))}"
+                    for index in range(1, dataset.RasterCount + 1)
+                )
             )
             continue
 
@@ -568,8 +615,22 @@ def read_sentinel2_l1c_atmosphere(
     metadata_path = _metadata_root(safe_path)
     baseline = _read_processing_baseline(metadata_path)
     ecmwf_paths = _find_auxiliary_files(safe_path, "AUX_ECMWFT")
-    water_sample = _sample_field(ecmwf_paths, _ECMWF_FIELDS["water"], site)
-    ozone_sample = _sample_field(ecmwf_paths, _ECMWF_FIELDS["ozone"], site)
+    water_sample = _sample_field(
+        ecmwf_paths,
+        _ECMWF_FIELDS["water"],
+        site,
+        fallback_band=_ECMWF_EMBEDDED_BANDS["water"],
+        fallback_product_prefix="AUX_ECMWFT",
+        fallback_raster_count=6,
+    )
+    ozone_sample = _sample_field(
+        ecmwf_paths,
+        _ECMWF_FIELDS["ozone"],
+        site,
+        fallback_band=_ECMWF_EMBEDDED_BANDS["ozone"],
+        fallback_product_prefix="AUX_ECMWFT",
+        fallback_raster_count=6,
+    )
     raw_water = water_to_g_cm2(water_sample.value, water_sample.unit)
     ozone = ozone_to_cm_atm(ozone_sample.value, ozone_sample.unit)
 
@@ -582,10 +643,20 @@ def read_sentinel2_l1c_atmosphere(
     if _parse_baseline(baseline) >= CAMS_BASELINE:
         cams_paths = _find_auxiliary_files(safe_path, "AUX_CAMS")
         total_sample = _sample_field(
-            cams_paths, _CAMS_FIELDS["aod550"], site
+            cams_paths,
+            _CAMS_FIELDS["aod550"],
+            site,
+            fallback_band=_CAMS_EMBEDDED_BANDS["aod550"],
+            fallback_product_prefix="AUX_CAMS",
+            fallback_raster_count=11,
         )
         geopotential_sample = _sample_field(
-            cams_paths, _CAMS_FIELDS["surface_geopotential"], site
+            cams_paths,
+            _CAMS_FIELDS["surface_geopotential"],
+            site,
+            fallback_band=_CAMS_EMBEDDED_BANDS["surface_geopotential"],
+            fallback_product_prefix="AUX_CAMS",
+            fallback_raster_count=11,
         )
         raw_aod550 = float(total_sample.value)
         model_elevation = geopotential_to_elevation_m(
@@ -598,7 +669,14 @@ def read_sentinel2_l1c_atmosphere(
         for name in (
             "black_carbon", "dust", "organic_matter", "sea_salt", "sulphate",
         ):
-            sample = _sample_field(cams_paths, _CAMS_FIELDS[name], site)
+            sample = _sample_field(
+                cams_paths,
+                _CAMS_FIELDS[name],
+                site,
+                fallback_band=_CAMS_EMBEDDED_BANDS[name],
+                fallback_product_prefix="AUX_CAMS",
+                fallback_raster_count=11,
+            )
             species[name] = sample.value
             auxiliary_files.add(sample.path)
         components = cams_aerosol_components(species)
