@@ -694,12 +694,13 @@ class Model(object):
         if band_definitions is None:
             band_definitions = [None] * len(self.meta["bandlist"])
 
-        for band, wvl, definition, hdr, bhr, brf in zip(
+        for band, wvl, definition, hdr, bhr, direct_albedo, brf in zip(
                 self.meta["bandlist"],
                 self.meta["wavelengths"],
                 band_definitions,
                 self.albedo["hdr"],
                 self.albedo["diffuse"],
+                self.albedo["direct"],
                 self.brf):
 
             rt_wavelength = (definition.py6s_filter
@@ -729,6 +730,7 @@ class Model(object):
                 ),
                 terrain_reflection_method=terrain_reflection_method,
                 terrain_visibility_radius_m=terrain_visibility_radius_m,
+                direct_albedo=direct_albedo,
             )
             (synthetic_toa_radiance,
              synthetic_toa_reflectance,

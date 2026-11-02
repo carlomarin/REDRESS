@@ -405,6 +405,7 @@ def iterative_radiance(
     weight_terrain_by_neighbour_beam_visibility=True,
     terrain_reflection_method="flat_irradiance",
     terrain_visibility_radius_m=None,
+    direct_albedo=None,
 ):
     """Iterative solver for TOA radiance.
 
@@ -426,6 +427,14 @@ def iterative_radiance(
     ``terrain_visibility_radius_m``, or the terrain-window half-width when
     omitted. Because hidden and coplanar terrain receive no weight, the
     radius can exceed the window without diluting the average.
+
+    In both exitance methods a neighbour radiates its hemispherical albedo
+    times its irradiance: ``direct_albedo``, the directional-hemispherical
+    reflectance at its local incidence, for its direct beam, and ``bhr``
+    for its sky, coupled and terrain irradiance. ``direct_albedo`` defaults
+    to ``bhr``. The reflectance retrieved toward the sensor is not used,
+    since it describes one direction only and departs strongly from the
+    albedo in absorbing bands.
     """
 
     if terrain_reflection_method not in TERRAIN_REFLECTION_METHODS:
@@ -498,9 +507,15 @@ def iterative_radiance(
     r = np.zeros_like(bhr)
     r = np.expand_dims(r, axis=2)
 
-    # Unaveraged reflectance whose window mean is rt. The neighbour exitance
-    # uses it before averaging so that reflectance and irradiance covary.
-    terrain_reflectance = np.asarray(bhr, dtype=np.float64)
+    # Neighbour exitance uses hemispherical albedos, which do not change
+    # between iterations. Reflection orders beyond the first are diffuse.
+    if direct_albedo is None:
+        direct_albedo = bhr
+    direct_albedo = np.asarray(direct_albedo, dtype=np.float64)
+    diffuse_albedo = np.asarray(bhr, dtype=np.float64)
+    terrain_diffuse_albedo = _window_mean(
+        diffuse_albedo, tw, boundary="nearest"
+    )
 
     l_toa = np.zeros_like(bhr)
     l_toa = np.expand_dims(l_toa, axis=2)
@@ -663,6 +678,11 @@ def iterative_radiance(
         # Higher reflection orders are carried by the series denominator, so
         # the terrain term itself is excluded to avoid counting them twice.
         pre_exchange_irradiance = EdP + (EhP_flat + coupled_irradiance) * vd
+        own_exitance = (
+            direct_albedo * np.asarray(EdP)
+            + diffuse_albedo
+            * np.asarray((EhP_flat + coupled_irradiance) * vd)
+        )
 
         # Terrain contribution switch
         if case.terrain_contribution and (
@@ -671,12 +691,12 @@ def iterative_radiance(
             # Mean neighbour exitance replaces the flat irradiance times the
             # mean neighbour reflectance (Sirguey et al. 2011, eq. 11).
             neighbour_exitance = _window_mean(
-                terrain_reflectance * np.asarray(pre_exchange_irradiance),
+                own_exitance,
                 tw,
                 boundary="nearest",
             )
             EtGP = topo_bands["ct"] * neighbour_exitance / (
-                1 - rt[:, :, i - 1] * ct_nbh
+                1 - terrain_diffuse_albedo * ct_nbh
             )
         elif case.terrain_contribution and (
             terrain_reflection_method == "visible_exitance"
@@ -685,9 +705,8 @@ def iterative_radiance(
             # iteration, so each iteration adds one reflection order and no
             # series denominator is needed.
             neighbour_exitance, visible_view_factor = visible_neighbour_mean(
-                terrain_reflectance * np.asarray(
-                    pre_exchange_irradiance + terrain_irradiance_previous
-                ),
+                own_exitance
+                + diffuse_albedo * np.asarray(terrain_irradiance_previous),
                 **visibility_kernel,
             )
             EtGP = topo_bands["ct"] * np.nan_to_num(neighbour_exitance)
@@ -743,7 +762,6 @@ def iterative_radiance(
         r = np.dstack((r, r_currentstep))
 
         # Apply the averaging of the updated reflectance
-        terrain_reflectance = r[:, :, i]
         re_i = _window_mean(r[:, :, i], aw, boundary="nearest")
         re = np.dstack((re, re_i))
         rt_i = _window_mean(r[:, :, i], tw, boundary="nearest")

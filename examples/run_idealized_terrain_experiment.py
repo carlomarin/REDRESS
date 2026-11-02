@@ -516,10 +516,15 @@ def two_wall_benchmark_records(
     terrain_reflection_method,
     neighbour_beam_weighting,
     bhr,
+    direct_albedo,
     atmospheric_lookup,
     diagnostics,
 ):
-    """Compare REDRESS with a two-wall radiosity solution at both walls."""
+    """Compare REDRESS with a two-wall radiosity solution at both walls.
+
+    Each wall reflects its own direct beam with its direct albedo and all
+    diffuse light with its diffuse albedo, as REDRESS neighbours do.
+    """
 
     if not terrain.name.startswith("v_valley_"):
         return None
@@ -554,6 +559,12 @@ def two_wall_benchmark_records(
     )
     reflectance_a = float(bhr[row_a, column_a])
     reflectance_b = float(bhr[row_b, column_b])
+    direct_options = {
+        "direct_irradiance_a_0": illumination_a["direct"],
+        "direct_irradiance_b_0": illumination_b["direct"],
+        "direct_reflectance_a": float(direct_albedo[row_a, column_a]),
+        "direct_reflectance_b": float(direct_albedo[row_b, column_b]),
+    }
     # The two sample points mirror each other, so one factor serves both
     # walls. The walls end at their rims and at the domain edge along the
     # valley.
@@ -569,6 +580,7 @@ def two_wall_benchmark_records(
         finite_factor,
         reflectance_a,
         reflectance_b,
+        **direct_options,
     )
     local_infinite_factor = (
         symmetric_v_valley_local_wall_view_factor(wall_slope)
@@ -579,6 +591,7 @@ def two_wall_benchmark_records(
         local_infinite_factor,
         reflectance_a,
         reflectance_b,
+        **direct_options,
     )
     shared = {
         "terrain": terrain.name,
@@ -591,6 +604,8 @@ def two_wall_benchmark_records(
         "neighbour_beam_weighting": int(neighbour_beam_weighting),
         "reflectance_a": reflectance_a,
         "reflectance_b": reflectance_b,
+        "direct_reflectance_a": direct_options["direct_reflectance_a"],
+        "direct_reflectance_b": direct_options["direct_reflectance_b"],
         "incidence_a_degree": np.rad2deg(
             topography["eff_sza"].values[row_a, column_a]
         ),
@@ -629,6 +644,7 @@ def two_wall_benchmark_records(
             raster_factor,
             reflectance_a,
             reflectance_b,
+            **direct_options,
         )
         redress_terrain = float(
             diagnostics["terrain_reflected_irradiance"][row, column]
@@ -725,6 +741,9 @@ def simulate_cover(
         bhr = mixed_surface_optics(
             model.albedo["diffuse"][index], snow_fraction, ground
         )
+        direct_albedo = mixed_surface_optics(
+            model.albedo["direct"][index], snow_fraction, ground
+        )
         brf = mixed_surface_optics(
             model.brf[index][1], snow_fraction, ground
         )
@@ -755,6 +774,7 @@ def simulate_cover(
             ),
             terrain_reflection_method=terrain_reflection_method,
             terrain_visibility_radius_m=TERRAIN_VISIBILITY_RADIUS_M,
+            direct_albedo=direct_albedo,
         )
         (
             _,
@@ -778,6 +798,7 @@ def simulate_cover(
             terrain_reflection_method,
             neighbour_beam_weighting,
             bhr,
+            direct_albedo,
             atmospheric_lookups[band],
             band_diagnostics,
         )

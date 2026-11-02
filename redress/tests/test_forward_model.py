@@ -519,6 +519,71 @@ def test_visible_exitance_converges_to_the_two_wall_solution():
     )
 
 
+def test_neighbours_radiate_their_albedo_not_the_sensor_reflectance():
+    terrain_factor = 0.3
+    diffuse_albedo = 0.5
+    direct_albedo = 0.8
+    terrain, angles, topography, resolution = _v_valley_geometry(
+        45.0, terrain_factor
+    )
+    case = Cases()
+    case.create_cases(3)
+    shape = topography["altitude"].shape
+    _, _, _, diagnostics = iterative_radiance(
+        topography,
+        angles,
+        wavelength=550.0,
+        hdr=np.full(shape, diffuse_albedo),
+        bhr=np.full(shape, diffuse_albedo),
+        rt_model=_CoupledAtmosphere,
+        rt_options={
+            "aerosol_model": "None",
+            "aod": 0.0,
+            "refl": 0.0,
+            "water": 0.0,
+            "ozone": 0.0,
+            "atmo_model": None,
+            "atcor": False,
+        },
+        # A BRF far from both albedos changes the reflectance retrieved
+        # toward the sensor, which must not affect the neighbour exitance.
+        brf=np.full(shape, 0.1),
+        case=case,
+        return_reflectance=True,
+        return_components=True,
+        return_diagnostics=True,
+        verbose=False,
+        pixel_resolution_m=resolution,
+        terrain_window_width_m=600.0,
+        terrain_reflection_method="visible_exitance",
+        direct_albedo=np.full(shape, direct_albedo),
+    )
+    row_a = int(np.argmin(np.abs(terrain.northing_m + 200.0)))
+    row_b = int(np.argmin(np.abs(terrain.northing_m - 200.0)))
+    column = shape[1] // 2
+    pre_exchange = diagnostics["pre_exchange_irradiance"]
+    direct = diagnostics["direct_irradiance"]
+    expected = solve_two_wall_irradiance(
+        pre_exchange[row_a, column],
+        pre_exchange[row_b, column],
+        terrain_factor,
+        diffuse_albedo,
+        diffuse_albedo,
+        direct_irradiance_a_0=direct[row_a, column],
+        direct_irradiance_b_0=direct[row_b, column],
+        direct_reflectance_a=direct_albedo,
+        direct_reflectance_b=direct_albedo,
+    )
+    terrain_irradiance = diagnostics["terrain_reflected_irradiance"]
+
+    assert terrain_irradiance[row_a, column] == pytest.approx(
+        expected["terrain_irradiance_a"], rel=0.02
+    )
+    assert terrain_irradiance[row_b, column] == pytest.approx(
+        expected["terrain_irradiance_b"], rel=0.02
+    )
+
+
 @pytest.mark.parametrize("radius", [0.0, -20.0, np.nan])
 def test_visible_exitance_rejects_invalid_radius(radius):
     _, angles, topography, resolution = _v_valley_geometry(45.0, 0.3)

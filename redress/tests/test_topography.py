@@ -185,6 +185,30 @@ class Test_dem_prods(object):
             45.0
         )
 
+    def test_two_wall_direct_beam_uses_the_direct_albedo(self):
+        result = solve_two_wall_irradiance(
+            irradiance_a_0=200.0,
+            irradiance_b_0=500.0,
+            view_factor=0.5,
+            reflectance_a=0.6,
+            reflectance_b=0.7,
+            direct_irradiance_a_0=50.0,
+            direct_irradiance_b_0=400.0,
+            direct_reflectance_a=0.9,
+            direct_reflectance_b=0.8,
+        )
+
+        # Wall exitances satisfy M = M0 + rho F M_other, with M0 reflecting
+        # the direct beam at the direct albedo.
+        exitance_a = result["terrain_irradiance_b"] / 0.5
+        exitance_b = result["terrain_irradiance_a"] / 0.5
+        assert exitance_a == approx(
+            0.9 * 50.0 + 0.6 * 150.0 + 0.6 * 0.5 * exitance_b
+        )
+        assert exitance_b == approx(
+            0.8 * 400.0 + 0.7 * 100.0 + 0.7 * 0.5 * exitance_a
+        )
+
     def test_two_wall_solution_satisfies_exchange_equations(self):
         result = solve_two_wall_irradiance(
             irradiance_a_0=200.0,

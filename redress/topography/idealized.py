@@ -125,20 +125,38 @@ def solve_two_wall_irradiance(
     view_factor,
     reflectance_a,
     reflectance_b,
+    direct_irradiance_a_0=0.0,
+    direct_irradiance_b_0=0.0,
+    direct_reflectance_a=None,
+    direct_reflectance_b=None,
 ):
     """Solve diffuse inter-reflection between two Lambertian walls.
 
     ``irradiance_a_0`` and ``irradiance_b_0`` contain each wall's own direct
     and sky-diffuse illumination before terrain exchange. The returned
     terrain terms include every order of reflection between the walls.
+
+    Each wall first reflects its own illumination with ``reflectance`` or,
+    for the ``direct_irradiance`` part of it, with ``direct_reflectance``
+    (its directional-hemispherical albedo at the local incidence). Light
+    exchanged between the walls is diffuse and is reflected with
+    ``reflectance``. Without direct terms both walls are fully Lambertian.
     """
 
+    if direct_reflectance_a is None:
+        direct_reflectance_a = reflectance_a
+    if direct_reflectance_b is None:
+        direct_reflectance_b = reflectance_b
     values = {
         "irradiance_a_0": irradiance_a_0,
         "irradiance_b_0": irradiance_b_0,
         "view_factor": view_factor,
         "reflectance_a": reflectance_a,
         "reflectance_b": reflectance_b,
+        "direct_irradiance_a_0": direct_irradiance_a_0,
+        "direct_irradiance_b_0": direct_irradiance_b_0,
+        "direct_reflectance_a": direct_reflectance_a,
+        "direct_reflectance_b": direct_reflectance_b,
     }
     values = {
         name: np.asarray(value, dtype=np.float64)
@@ -148,43 +166,61 @@ def solve_two_wall_irradiance(
         values["view_factor"] > 1.0
     )):
         raise ValueError("view_factor must lie in [0, 1]")
-    for name in ("reflectance_a", "reflectance_b"):
+    for name in (
+        "reflectance_a", "reflectance_b",
+        "direct_reflectance_a", "direct_reflectance_b",
+    ):
         if np.any((values[name] < 0.0) | (values[name] > 1.0)):
             raise ValueError(f"{name} must lie in [0, 1]")
+    for side in ("a", "b"):
+        if np.any(
+            (values[f"direct_irradiance_{side}_0"] < 0.0)
+            | (
+                values[f"direct_irradiance_{side}_0"]
+                > values[f"irradiance_{side}_0"]
+            )
+        ):
+            raise ValueError(
+                f"direct_irradiance_{side}_0 must lie in "
+                f"[0, irradiance_{side}_0]"
+            )
 
+    view_factor = values["view_factor"]
     denominator = 1.0 - (
-        values["view_factor"] ** 2
-        * values["reflectance_a"]
-        * values["reflectance_b"]
+        view_factor ** 2 * values["reflectance_a"] * values["reflectance_b"]
     )
     if np.any(denominator <= 0.0):
         raise ValueError("two-wall reflection series does not converge")
 
-    irradiance_a = (
-        values["irradiance_a_0"]
-        + values["view_factor"]
-        * values["reflectance_b"]
-        * values["irradiance_b_0"]
+    # Exitance of each wall from its own illumination.
+    exitance_0 = {
+        side: (
+            values[f"direct_reflectance_{side}"]
+            * values[f"direct_irradiance_{side}_0"]
+            + values[f"reflectance_{side}"]
+            * (
+                values[f"irradiance_{side}_0"]
+                - values[f"direct_irradiance_{side}_0"]
+            )
+        )
+        for side in ("a", "b")
+    }
+    # M_a = M_a0 + rho_a F M_b and M_b = M_b0 + rho_b F M_a.
+    exitance_a = (
+        exitance_0["a"] + values["reflectance_a"] * view_factor
+        * exitance_0["b"]
     ) / denominator
-    irradiance_b = (
-        values["irradiance_b_0"]
-        + values["view_factor"]
-        * values["reflectance_a"]
-        * values["irradiance_a_0"]
+    exitance_b = (
+        exitance_0["b"] + values["reflectance_b"] * view_factor
+        * exitance_0["a"]
     ) / denominator
+    terrain_a = view_factor * exitance_b
+    terrain_b = view_factor * exitance_a
     return {
-        "irradiance_a": irradiance_a,
-        "irradiance_b": irradiance_b,
-        "terrain_irradiance_a": (
-            values["view_factor"]
-            * values["reflectance_b"]
-            * irradiance_b
-        ),
-        "terrain_irradiance_b": (
-            values["view_factor"]
-            * values["reflectance_a"]
-            * irradiance_a
-        ),
+        "irradiance_a": values["irradiance_a_0"] + terrain_a,
+        "irradiance_b": values["irradiance_b_0"] + terrain_b,
+        "terrain_irradiance_a": terrain_a,
+        "terrain_irradiance_b": terrain_b,
     }
 
 
