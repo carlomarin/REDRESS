@@ -22,6 +22,7 @@ import numpy as np
 import xarray as xr
 
 from redress.inputs.products import Dem, Model
+from redress.optics.snow import SNOW_ALBEDO_MODELS
 from redress.inputs.sentinel2 import (
     SENTINEL2_BAND_NAMES,
     normalize_sentinel2_band_name,
@@ -107,6 +108,8 @@ class SnowSurface:
     dust_ug_g: float = 0.0
     dust_density_kg_m3: float = 2600.0
     dust_model: str = "muller2011"
+    # "art" or "tartes"; see redress.optics.snow.SNOW_ALBEDO_MODELS.
+    albedo_model: str = "art"
 
     def validate(self) -> None:
         """Validate the snow and impurity properties."""
@@ -124,6 +127,11 @@ class SnowSurface:
         ):
             if not np.isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and non-negative")
+        if self.albedo_model not in SNOW_ALBEDO_MODELS:
+            raise ValueError(
+                "albedo_model must be one of: "
+                + ", ".join(SNOW_ALBEDO_MODELS)
+            )
 
 
 @dataclass(frozen=True)
@@ -640,6 +648,7 @@ def simulate_sentinel2_scene(
     model.set_sentinel2(platform, band_names)
     model.import_rt_model("python_6S")
     model.ssa = snow.specific_surface_area_m2_kg
+    model.snow_albedo_model = snow.albedo_model
     model.set_lap(
         black_carbon_ng_g=snow.black_carbon_ng_g,
         dust_ug_g=snow.dust_ug_g,

@@ -191,3 +191,49 @@ def test_brf_shares_the_albedo_absorption(monkeypatch):
     u_i = 3.0 / 7.0 * (1.0 + 2.0 * cos_i)
     u_v = 3.0 / 7.0 * (1.0 + 2.0 * cos_v)
     assert brf == pytest.approx(r0 * np.exp(-0.7 * u_i * u_v / r0))
+
+
+def test_tartes_directional_albedo_matches_tartes():
+    import tartes
+
+    zenith = np.deg2rad(np.array([[0.0, 30.0], [60.0, 80.0]]))
+
+    albedo = directional_albedo_kokhanovsky(
+        1610.0, zenith, 60.0, albedo_model="tartes"
+    )
+
+    expected = [
+        tartes.albedo(
+            1610e-9, 60.0, density=300.0,
+            shape_parameterization="constant", B0=1.6, g0=0.845,
+            refrac_index="w2008", dir_frac=1.0, sza=angle,
+        )
+        for angle in np.degrees(zenith).ravel()
+    ]
+    np.testing.assert_allclose(albedo.ravel(), expected, rtol=2e-3)
+
+
+def test_brf_closes_on_the_tartes_albedo():
+    incidence = np.deg2rad(30.0)
+    albedo = directional_albedo_kokhanovsky(
+        1610.0, incidence, 60.0, albedo_model="tartes"
+    )
+
+    assert _hemispheric_brf_integral(
+        incidence, 1610.0, 60.0, albedo_model="tartes"
+    ) == pytest.approx(float(albedo), rel=2e-3)
+    # TARTES is brighter than ART where ice absorbs strongly.
+    assert float(albedo) > 1.3 * float(
+        directional_albedo_kokhanovsky(1610.0, incidence, 60.0)
+    )
+
+
+def test_tartes_albedo_rejects_impurities_and_unknown_models():
+    with pytest.raises(NotImplementedError):
+        albedo_kokhanovsky(
+            500.0, 0.5, 0.25, 20.0,
+            impurities=lap_impurities(black_carbon_ng_g=50.0),
+            albedo_model="tartes",
+        )
+    with pytest.raises(ValueError, match="albedo_model"):
+        directional_albedo_kokhanovsky(500.0, 0.5, 20.0, albedo_model="x")

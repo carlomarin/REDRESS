@@ -352,6 +352,8 @@ class Model(object):
     def __init__(self):
 
         self.ssa = None
+        # Snow albedo model, one of snow.SNOW_ALBEDO_MODELS.
+        self.snow_albedo_model = "art"
         self.snow_impurities = {}
         self.lap = {
             "black_carbon_ng_g": 0.0,
@@ -538,12 +540,14 @@ class Model(object):
                     diffuse_total_ratio,
                     self.ssa,
                     impurities=self.snow_impurities,
+                    albedo_model=self.snow_albedo_model,
                     B=1.6, g=0.845)
                 hdr = snow.directional_albedo_kokhanovsky(
                     wvl,
                     local_view_zenith,
                     self.ssa,
                     impurities=self.snow_impurities,
+                    albedo_model=self.snow_albedo_model,
                     B=1.6,
                     g=0.845,
                 )
@@ -555,6 +559,7 @@ class Model(object):
                         diffuse_total_ratio,
                         self.ssa,
                         impurities=self.snow_impurities,
+                        albedo_model=self.snow_albedo_model,
                         B=1.6,
                         g=0.845,
                     )
@@ -566,6 +571,7 @@ class Model(object):
                         local_view_zenith,
                         self.ssa,
                         impurities=self.snow_impurities,
+                        albedo_model=self.snow_albedo_model,
                         B=1.6,
                         g=0.845,
                     )
@@ -625,6 +631,7 @@ class Model(object):
                     wvl,
                     self.ssa,
                     impurities=self.snow_impurities,
+                    albedo_model=self.snow_albedo_model,
                 )
             else:
                 spectral_brf = [
@@ -635,6 +642,7 @@ class Model(object):
                         spectral_wavelength,
                         self.ssa,
                         impurities=self.snow_impurities,
+                        albedo_model=self.snow_albedo_model,
                     )
                     for spectral_wavelength in band_definition.wavelength_nm
                 ]

@@ -6,12 +6,18 @@ Snow optics tools.
 This file is part of the complex_terrain algorithm
 M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 """
+from functools import lru_cache
+
 import numpy as np
 import snowoptics as so
 
 
 DEFAULT_DUST_DENSITY_KG_M3 = 2600.0
 DUST_MODELS = ("muller2011", "skiles2014")
+# "art" uses the asymptotic Kokhanovsky-Zege albedo. "tartes" takes the
+# albedo from the TARTES two-stream model, which stays accurate when ice
+# absorbs strongly, as in Sentinel-2 B11 and B12.
+SNOW_ALBEDO_MODELS = ("art", "tartes")
 
 
 def lap_impurities(
@@ -71,6 +77,65 @@ def lap_impurities(
     return impurities
 
 
+def _validate_albedo_model(albedo_model, impurities):
+    if albedo_model not in SNOW_ALBEDO_MODELS:
+        raise ValueError(
+            "albedo_model must be one of: " + ", ".join(SNOW_ALBEDO_MODELS)
+        )
+    if albedo_model == "tartes" and impurities:
+        raise NotImplementedError(
+            "TARTES snow albedo is only available for clean snow"
+        )
+
+
+def _tartes_albedo(wavelength_nm, ssa, zenith_degree, B, g):
+    """Semi-infinite TARTES albedo; ``zenith_degree=None`` is diffuse.
+
+    B and g are held constant, as in the ART albedo, so the two models
+    differ only in their radiative transfer.
+    """
+
+    import tartes
+
+    options = {
+        "density": 300.0,  # A semi-infinite albedo does not depend on it.
+        "shape_parameterization": "constant",
+        "B0": B,
+        "g0": g,
+        "refrac_index": "w2008",
+    }
+    if zenith_degree is None:
+        return float(tartes.albedo(
+            wavelength_nm * 1e-9, ssa, dir_frac=0.0, **options
+        ))
+    return float(tartes.albedo(
+        wavelength_nm * 1e-9, ssa, dir_frac=1.0, sza=zenith_degree,
+        **options
+    ))
+
+
+@lru_cache(maxsize=4096)
+def _tartes_directional_table(wavelength_nm, ssa, B, g):
+    """TARTES directional albedo on the closure nodes plus mu = 0 and 1."""
+
+    mu, _ = _closure_nodes()
+    mu = np.concatenate(([0.0], mu, [1.0]))
+    albedo = np.array([
+        _tartes_albedo(
+            wavelength_nm, ssa, float(np.degrees(np.arccos(value))), B, g
+        )
+        for value in mu
+    ])
+    return mu, albedo
+
+
+def _directional_albedo_tartes(wavelength_nm, zenith, ssa, B, g):
+    mu, albedo = _tartes_directional_table(
+        float(wavelength_nm), float(ssa), float(B), float(g)
+    )
+    return np.interp(np.cos(zenith), mu, albedo)
+
+
 def albedo_kokhanovsky(
     wls,
     sza,
@@ -79,6 +144,7 @@ def albedo_kokhanovsky(
     impurities=None,
     B=1.6,
     g=0.845,
+    albedo_model="art",
 ):
     """Calculate black sky, white sky and blue sky albedo.
 
@@ -103,6 +169,8 @@ def albedo_kokhanovsky(
     :type B: float, optional
     :param g: Snow asymmetry factor
     :type g: float, optional
+    :param albedo_model: "art" or "tartes", see ``SNOW_ALBEDO_MODELS``
+    :type albedo_model: str, optional
     :return: black sky, white sky and blue sky albedos
     :rtype: tuple [3]
     """
@@ -113,15 +181,19 @@ def albedo_kokhanovsky(
     if np.any((sza < 0) | (sza > np.pi / 2)):
         raise ValueError("solar zenith angles must be in [0, pi/2] radians")
 
+    _validate_albedo_model(albedo_model, impurities)
     # White-sky albedo does not depend on solar zenith angle.
-    alb_diff_flat_val = so.albedo_diffuse_KZ04(
-        wls_m,
-        ssa,
-        impurities=impurities,
-        ni="w2008",
-        B=B,
-        g=g,
-    )
+    if albedo_model == "tartes":
+        alb_diff_flat_val = _tartes_albedo(float(wls), ssa, None, B, g)
+    else:
+        alb_diff_flat_val = so.albedo_diffuse_KZ04(
+            wls_m,
+            ssa,
+            impurities=impurities,
+            ni="w2008",
+            B=B,
+            g=g,
+        )
 
     alb_dir_flat = directional_albedo_kokhanovsky(
         wls,
@@ -130,6 +202,7 @@ def albedo_kokhanovsky(
         impurities=impurities,
         B=B,
         g=g,
+        albedo_model=albedo_model,
     )
 
     # Make diffuse albedo and diffuse fraction conform to the angle grid.
@@ -154,18 +227,24 @@ def directional_albedo_kokhanovsky(
     impurities=None,
     B=1.6,
     g=0.845,
+    albedo_model="art",
 ):
     """Calculate directional-hemispherical snow reflectance.
 
     Through BRDF reciprocity, evaluating this quantity at the local viewing
     zenith also gives the hemispherical-directional reflectance required for
-    diffuse illumination in the REDRESS forward model.
+    diffuse illumination in the REDRESS forward model. With
+    ``albedo_model="tartes"`` it is interpolated in cos(zenith) from TARTES
+    values at one wavelength.
     """
 
+    _validate_albedo_model(albedo_model, impurities)
     wavelength_m = wls * 1e-9
     zenith = np.asarray(zenith, dtype=np.float64)
     if np.any((zenith < 0) | (zenith > np.pi / 2)):
         raise ValueError("zenith angles must be in [0, pi/2] radians")
+    if albedo_model == "tartes":
+        return _directional_albedo_tartes(wls, zenith, ssa, B, g)
 
     # Snowoptics 0.99.2 implements this expression directly but validates the
     # cosine with a scalar assertion. Reproduce the same ART equation here so
@@ -211,17 +290,23 @@ def _art_brf(theta_i, theta_v, phi, absorption):
     return r0 * np.exp(-absorption * u_i * u_v / r0)
 
 
-def _brf_closure_factors(absorption):
+def _closure_nodes():
+    """Gauss-Legendre nodes and weights in mu on [0, 1]."""
+
+    nodes, weights = np.polynomial.legendre.leggauss(_CLOSURE_ZENITH_NODES)
+    return 0.5 * (nodes + 1.0), 0.5 * weights
+
+
+def _brf_closure_factors(absorption, albedo):
     """Return reciprocal factors that close the BRF on the albedo.
 
     The factors f solve f(mu_i) * (1/pi) * integral of f(mu_v) R mu_v
-    over the view hemisphere = exp(-absorption u(mu_i)) on Gauss-Legendre
-    nodes in mu. Scaling R by f(mu_i) f(mu_v) keeps it reciprocal.
+    over the view hemisphere = albedo(mu_i) on Gauss-Legendre nodes in mu,
+    where R is the ART BRF with the given absorption exponent. Scaling R by
+    f(mu_i) f(mu_v) keeps it reciprocal.
     """
 
-    nodes, weights = np.polynomial.legendre.leggauss(_CLOSURE_ZENITH_NODES)
-    mu = 0.5 * (nodes + 1.0)
-    weights = 0.5 * weights
+    mu, weights = _closure_nodes()
     zenith = np.arccos(mu)
     azimuth = (
         (np.arange(_CLOSURE_AZIMUTH_SAMPLES) + 0.5)
@@ -235,7 +320,6 @@ def _brf_closure_factors(absorption):
     )
     # (1/pi) times the azimuth integral is twice the azimuthal mean.
     kernel = 2.0 * brf.mean(axis=2) * (mu * weights)[np.newaxis, :]
-    albedo = np.exp(-absorption * 3.0 / 7.0 * (1.0 + 2.0 * mu))
 
     factors = np.ones_like(mu)
     for _ in range(500):
@@ -244,7 +328,7 @@ def _brf_closure_factors(absorption):
         factors = updated
         if converged:
             break
-    return mu, factors
+    return factors
 
 
 def brf_kokhanovsky(
@@ -257,6 +341,7 @@ def brf_kokhanovsky(
     B=1.6,
     g=0.845,
     close_on_albedo=True,
+    albedo_model="art",
 ):
     """Calculate snow BRF.
 
@@ -271,7 +356,9 @@ def brf_kokhanovsky(
     f(theta_i) f(theta_v) so that its integral over the view hemisphere
     equals that directional albedo. Without it, the asymptotic BRF
     reflects up to about twice the albedo in strongly absorbing bands such
-    as B11 and B12.
+    as B11 and B12. With ``albedo_model="tartes"`` the closure targets the
+    TARTES directional albedo instead, so ART supplies only the angular
+    shape.
 
     :param theta_i: illumination zenith angle
     :type theta_i: float
@@ -292,12 +379,17 @@ def brf_kokhanovsky(
     :type g: float, optional
     :param close_on_albedo: scale the BRF to integrate to the albedo
     :type close_on_albedo: bool, optional
+    :param albedo_model: "art" or "tartes", see ``SNOW_ALBEDO_MODELS``
+    :type albedo_model: str, optional
     :return: BRF
     :rtype: ndarray
     """
 
     if np.ndim(wvl) != 0:
         raise ValueError("brf_kokhanovsky expects one wavelength")
+    _validate_albedo_model(albedo_model, impurities)
+    if albedo_model == "tartes" and not close_on_albedo:
+        raise ValueError("the TARTES albedo requires close_on_albedo=True")
     absorption = float(np.sqrt(so.compute_alpha(
         float(wvl) * 1e-9,
         SSA,
@@ -310,7 +402,12 @@ def brf_kokhanovsky(
     if not close_on_albedo:
         return rr
 
-    mu, factors = _brf_closure_factors(absorption)
+    mu, _ = _closure_nodes()
+    if albedo_model == "tartes":
+        albedo = _directional_albedo_tartes(wvl, np.arccos(mu), SSA, B, g)
+    else:
+        albedo = np.exp(-absorption * 3.0 / 7.0 * (1.0 + 2.0 * mu))
+    factors = _brf_closure_factors(absorption, albedo)
     factor_i = np.interp(np.cos(theta_i), mu, factors)
     factor_v = np.interp(np.cos(theta_v), mu, factors)
     return rr * factor_i * factor_v

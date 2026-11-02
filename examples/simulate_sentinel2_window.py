@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from redress.optics.snow import SNOW_ALBEDO_MODELS
 from redress.simulation.sentinel2_scene import (
     SnowSurface,
     crop_scene,
@@ -50,13 +51,16 @@ PLATFORM = "S2B"
 BANDS = ("B02", "B03", "B04", "B05", "B06", "B07", "B8A", "B11", "B12")
 GRID_RESOLUTION_M = 20.0
 
-# Over Weissee on 2022-01-13, an SSA sweep from 20 to 100 m2 kg-1 put the
-# zero B11 bias near 65 and the zero B12 bias near 50; 60 gives a B11 bias
-# of -0.007 and an independent B12 bias of +0.014 on pure snow.
+# TARTES supplies the snow albedo because the asymptotic ART albedo is up
+# to 1.5 times too dark in B11 and B12 near normal incidence. Over Weissee
+# on 2022-01-13, a TARTES SSA sweep from 20 to 60 m2 kg-1 put the zero bias
+# near 44 in B11 and 33 in B12; 40 gives -0.006 and +0.011 on pure snow.
+# With ART, the same fit needed SSA 60 and the bands disagreed more.
 SNOW = SnowSurface(
-    specific_surface_area_m2_kg=60.0,
+    specific_surface_area_m2_kg=40.0,
     black_carbon_ng_g=0.0,
     dust_ug_g=0.0,
+    albedo_model="tartes",
 )
 
 # Products before processing baseline 04.00 do not contain CAMS aerosol
@@ -103,6 +107,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--ssa", type=float, default=SNOW.specific_surface_area_m2_kg,
         help="snow specific surface area in m2 kg-1 (default %(default)g)",
+    )
+    parser.add_argument(
+        "--snow-albedo", choices=SNOW_ALBEDO_MODELS,
+        default=SNOW.albedo_model,
+        help="snow albedo model; the BRF angular shape is ART in both "
+        "cases (default %(default)s)",
     )
     parser.add_argument(
         "--output-directory", type=Path, required=True,
@@ -162,7 +172,8 @@ def main() -> None:
     print(f"Acquisition: {auxiliary.acquisition_time.isoformat()}")
     print(
         f"Snow SSA: {arguments.ssa:g} m2 kg-1 "
-        f"(optical diameter {6.0e3 / (917.0 * arguments.ssa):.2f} mm)"
+        f"(optical diameter {6.0e3 / (917.0 * arguments.ssa):.2f} mm), "
+        f"{arguments.snow_albedo.upper()} albedo"
     )
     print(
         "Geometry: "
@@ -176,7 +187,11 @@ def main() -> None:
         dem,
         auxiliary.geometry,
         auxiliary.atmosphere,
-        replace(SNOW, specific_surface_area_m2_kg=arguments.ssa),
+        replace(
+            SNOW,
+            specific_surface_area_m2_kg=arguments.ssa,
+            albedo_model=arguments.snow_albedo,
+        ),
         platform=PLATFORM,
         band_names=BANDS,
         case_number=5,
