@@ -42,6 +42,20 @@ def _surface_optics_zenith(zenith):
     )
 
 
+def _spatial_coords(dataset):
+    """Return the coordinates of ``dataset`` that fit an (x, y) array.
+
+    Topography bands also carry non-spatial coordinates, such as the
+    horizon azimuth ``phi``, which a 2-D output array cannot hold.
+    """
+
+    return {
+        name: coordinate
+        for name, coordinate in dataset.coords.items()
+        if set(coordinate.dims) <= {"x", "y"}
+    }
+
+
 class Sat(object):
     """ Satellite image class
 
@@ -719,13 +733,14 @@ class Model(object):
             (synthetic_toa_radiance,
              synthetic_toa_reflectance,
              radiance_components) = result
+            spatial_coords = _spatial_coords(self.topo_bands)
             self.toa_rad[band] = xr.DataArray(synthetic_toa_radiance,
                                               dims=['x', 'y'],
-                                              coords=self.topo_bands.coords)
+                                              coords=spatial_coords)
             self.toa_reflectance[band] = xr.DataArray(
                 synthetic_toa_reflectance,
                 dims=['x', 'y'],
-                coords=self.topo_bands.coords,
+                coords=spatial_coords,
             )
             for component_name, component_values in (
                 radiance_components.items()
@@ -733,6 +748,6 @@ class Model(object):
                 self.toa_components[component_name][band] = xr.DataArray(
                     component_values,
                     dims=['x', 'y'],
-                    coords=self.topo_bands.coords,
+                    coords=spatial_coords,
                 )
 

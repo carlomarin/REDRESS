@@ -18,7 +18,7 @@ from redress.topography.dem_products import (
     terrain_visibility,
     visible_neighbour_mean,
 )
-from redress.inputs.products import Dem
+from redress.inputs.products import Dem, _spatial_coords
 from redress.topography.idealized import (
     solve_two_wall_irradiance,
     symmetric_v_valley,
@@ -444,3 +444,22 @@ def test_visible_neighbour_mean_ignores_coplanar_neighbours():
         # edge-on, so no rounding residual may define a mean.
         assert view_factor[row, 20] == 0.0
         assert np.isnan(mean[row, 20])
+
+
+def test_spatial_coords_drop_the_horizon_azimuth():
+    # Horizon bands add a phi coordinate that 2-D outputs cannot carry.
+    bands = xr.Dataset(
+        {
+            "altitude": (("x", "y"), np.zeros((3, 4))),
+            "horizon_ele": (("phi", "x", "y"), np.zeros((8, 3, 4))),
+        },
+        coords={
+            "x": np.arange(3.0),
+            "y": np.arange(4.0),
+            "phi": np.linspace(0.0, 2.0 * np.pi, 8, endpoint=False),
+        },
+    )
+    coords = _spatial_coords(bands)
+    assert set(coords) == {"x", "y"}
+    output = xr.DataArray(np.ones((3, 4)), dims=["x", "y"], coords=coords)
+    assert output.shape == (3, 4)
