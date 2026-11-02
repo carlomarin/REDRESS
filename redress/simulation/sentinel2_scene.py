@@ -707,11 +707,31 @@ def write_central_pixel_csv(
     return path
 
 
+def _scene_geotransform(scene: xr.Dataset, dem: Dem) -> tuple[float, ...]:
+    """Return the GDAL geotransform of a full or cropped scene.
+
+    The scene coordinates are pixel centres on the DEM grid, so a scene
+    cropped with :func:`crop_scene` keeps its own origin.
+    """
+
+    geotransform = dem.geotransform
+    return (
+        float(scene["x"].values[0]) - 0.5 * geotransform[1],
+        geotransform[1],
+        geotransform[2],
+        float(scene["y"].values[0]) - 0.5 * geotransform[5],
+        geotransform[4],
+        geotransform[5],
+    )
+
+
 def _with_cf_grid_mapping(scene: xr.Dataset, dem: Dem) -> xr.Dataset:
     """Attach a GDAL-compatible CF grid-mapping variable."""
 
     output = scene.copy()
-    geotransform = " ".join(str(value) for value in dem.geotransform)
+    geotransform = " ".join(
+        str(value) for value in _scene_geotransform(scene, dem)
+    )
     output["spatial_ref"] = xr.DataArray(
         0,
         attrs={
@@ -767,7 +787,7 @@ def write_multiband_geotiff(
     )
     if raster is None:
         raise OSError(f"GDAL could not create {path}")
-    raster.SetGeoTransform(dem.geotransform)
+    raster.SetGeoTransform(_scene_geotransform(scene, dem))
     raster.SetProjection(dem.crs_wkt)
     for index, band_name in enumerate(scene["band"].values, start=1):
         band = raster.GetRasterBand(index)
@@ -777,3 +797,406 @@ def write_multiband_geotiff(
     raster.FlushCache()
     raster = None
     return path
+
+
+# ---------------------------------------------------------------------------
+# Comparison with an observed L1C product
+# ---------------------------------------------------------------------------
+
+SENTINEL2_NATIVE_RESOLUTION_M = {
+    "B01": 60.0, "B02": 10.0, "B03": 10.0, "B04": 10.0, "B05": 20.0,
+    "B06": 20.0, "B07": 20.0, "B08": 10.0, "B8A": 20.0, "B09": 60.0,
+    "B10": 60.0, "B11": 20.0, "B12": 20.0,
+}
+
+
+@dataclass(frozen=True)
+class Sentinel2TileGrid:
+    """Upper-left corner and CRS of one Sentinel-2 tile resolution."""
+
+    upper_left_x: float
+    upper_left_y: float
+    resolution_m: float
+    epsg: int
+
+
+def read_mtd_tl_grid(
+    mtd_tl_file: str | Path,
+    resolution_m: float = 20.0,
+) -> Sentinel2TileGrid:
+    """Read the tile grid of one resolution from ``MTD_TL.xml``."""
+
+    mtd_tl_file = Path(mtd_tl_file).expanduser().resolve()
+    root = ET.parse(mtd_tl_file).getroot()
+    codes = [
+        (element.text or "").strip()
+        for element in root.iter()
+        if _local_name(element) == "HORIZONTAL_CS_CODE"
+    ]
+    if len(codes) != 1 or not codes[0].upper().startswith("EPSG:"):
+        raise ValueError(f"{mtd_tl_file}: expected one EPSG code")
+    for element in root.iter():
+        if (
+            _local_name(element) == "Geoposition"
+            and np.isclose(float(element.attrib["resolution"]), resolution_m)
+        ):
+            return Sentinel2TileGrid(
+                upper_left_x=_child_float(element, "ULX"),
+                upper_left_y=_child_float(element, "ULY"),
+                resolution_m=float(resolution_m),
+                epsg=int(codes[0].split(":", maxsplit=1)[1]),
+            )
+    raise ValueError(
+        f"{mtd_tl_file}: no Geoposition at {resolution_m:g} m resolution"
+    )
+
+
+def resample_dem_to_sentinel2_grid(
+    source_dem: str | Path,
+    output_dem: str | Path,
+    grid: Sentinel2TileGrid,
+) -> Path:
+    """Average a finer DEM onto the Sentinel-2 pixel grid.
+
+    The output covers the largest extent of whole Sentinel-2 pixels that
+    lies inside the source DEM, so every simulated pixel matches one
+    observed pixel exactly.
+    """
+
+    from osgeo import gdal
+
+    source_dem = Path(source_dem).expanduser().resolve()
+    output_dem = Path(output_dem).expanduser().resolve()
+    output_dem.parent.mkdir(parents=True, exist_ok=True)
+    dataset = gdal.Open(str(source_dem), gdal.GA_ReadOnly)
+    if dataset is None:
+        raise OSError(f"GDAL cannot read DEM: {source_dem}")
+    geotransform = dataset.GetGeoTransform()
+    if not np.isclose(geotransform[2], 0.0) or not np.isclose(
+        geotransform[4], 0.0
+    ):
+        raise ValueError("the source DEM must be north-up")
+    west = geotransform[0]
+    north = geotransform[3]
+    east = west + dataset.RasterXSize * geotransform[1]
+    south = north + dataset.RasterYSize * geotransform[5]
+    resolution = grid.resolution_m
+    # Snap inward so no output pixel is only partly covered.
+    west = grid.upper_left_x + np.ceil(
+        (west - grid.upper_left_x) / resolution
+    ) * resolution
+    east = grid.upper_left_x + np.floor(
+        (east - grid.upper_left_x) / resolution
+    ) * resolution
+    north = grid.upper_left_y - np.ceil(
+        (grid.upper_left_y - north) / resolution
+    ) * resolution
+    south = grid.upper_left_y - np.floor(
+        (grid.upper_left_y - south) / resolution
+    ) * resolution
+    if east <= west or north <= south:
+        raise ValueError("the source DEM is smaller than one tile pixel")
+    nodata = dataset.GetRasterBand(1).GetNoDataValue()
+    result = gdal.Warp(
+        str(output_dem),
+        dataset,
+        dstSRS=f"EPSG:{grid.epsg}",
+        outputBounds=(west, south, east, north),
+        xRes=resolution,
+        yRes=resolution,
+        resampleAlg="average",
+        srcNodata=nodata,
+        dstNodata=-9999.0,
+        outputType=gdal.GDT_Float32,
+        creationOptions=("COMPRESS=DEFLATE", "TILED=YES"),
+    )
+    if result is None:
+        raise OSError(f"GDAL could not resample {source_dem}")
+    result.FlushCache()
+    return output_dem
+
+
+def edge_independent_window(
+    dem: Dem,
+    maximum_window_width_m: float,
+    margin_m: float | None = None,
+) -> tuple[slice, slice]:
+    """Return the central rows and columns kept away from the DEM edges.
+
+    By default a pixel qualifies when the widest moving window centred on
+    it lies entirely inside the DEM. ``margin_m`` sets a smaller distance
+    instead, accepting truncated windows and horizons near the edges.
+    """
+
+    pixel_size = abs(float(dem.pixel_size[0]))
+    if margin_m is None:
+        window_pixels = int(np.ceil(maximum_window_width_m / pixel_size))
+        if window_pixels % 2 == 0:
+            window_pixels += 1
+        margin = window_pixels // 2
+    else:
+        if not margin_m >= 0.0:
+            raise ValueError("margin_m must be non-negative")
+        margin = int(np.ceil(margin_m / pixel_size))
+    rows, columns = dem.bands["altitude"].shape
+    if rows <= 2 * margin or columns <= 2 * margin:
+        raise ValueError(
+            "the DEM has no pixel at least "
+            f"{margin * pixel_size:g} m from its edges"
+        )
+    return slice(margin, rows - margin), slice(margin, columns - margin)
+
+
+def crop_scene(
+    scene: xr.Dataset,
+    rows: slice,
+    columns: slice,
+) -> xr.Dataset:
+    """Return the scene restricted to the given DEM rows and columns."""
+
+    cropped = scene.isel(y=rows, x=columns).copy()
+    cropped.attrs.update(
+        source_row_start=int(rows.start),
+        source_column_start=int(columns.start),
+    )
+    return cropped
+
+
+def _l1c_radiometric_scaling(safe_folder: Path):
+    """Return the L1C quantification value and per-band offsets."""
+
+    product_files = sorted(safe_folder.glob("MTD_MSIL1C.xml"))
+    if len(product_files) != 1:
+        raise FileNotFoundError(f"MTD_MSIL1C.xml not found in {safe_folder}")
+    root = ET.parse(product_files[0]).getroot()
+    quantification = [
+        float(element.text)
+        for element in root.iter()
+        if _local_name(element) == "QUANTIFICATION_VALUE"
+    ]
+    if len(quantification) != 1:
+        raise ValueError("expected one L1C QUANTIFICATION_VALUE")
+    # Processing baselines before 04.00 have no offsets.
+    offsets = {
+        SENTINEL2_BAND_NAMES[int(element.attrib["band_id"])]: float(
+            element.text
+        )
+        for element in root.iter()
+        if _local_name(element) == "RADIO_ADD_OFFSET"
+    }
+    return quantification[0], offsets
+
+
+def _jp2_precision(path: Path) -> int:
+    """Return the component bit depth from a JPEG 2000 codestream header."""
+
+    # The codestream starts with SOC (FF4F) followed directly by SIZ
+    # (FF51); the first component's Ssiz byte lies 40 bytes after SIZ.
+    marker = b"\xff\x4f\xff\x51"
+    with path.open("rb") as stream:
+        head = stream.read(1 << 20)
+    start = head.find(marker)
+    if start < 0 or start + 42 >= len(head):
+        raise ValueError(f"no JPEG 2000 SIZ marker found in {path}")
+    return (head[start + 42] & 0x7F) + 1
+
+
+def _read_jp2_counts(path: Path, box: tuple[int, int, int, int]) -> np.ndarray:
+    """Read a window of digital numbers at their stored bit depth.
+
+    Pillow scales lower-precision 16-bit codestreams to the full 16-bit
+    range, so the 15-bit L1C counts are shifted back.
+    """
+
+    from PIL import Image
+
+    shift = 16 - _jp2_precision(path)
+    with Image.open(path) as image:
+        counts = np.asarray(image.crop(box), dtype=np.uint16)
+    return np.right_shift(counts, shift).astype(np.float64)
+
+
+def read_l1c_toa_reflectance(
+    safe_folder: str | Path,
+    grid: Sentinel2TileGrid,
+    x: np.ndarray,
+    y: np.ndarray,
+    band_names: Sequence[str] = DEFAULT_BANDS,
+) -> xr.Dataset:
+    """Read observed L1C TOA reflectance on simulated pixel centres.
+
+    ``x`` and ``y`` are pixel centres on the ``grid`` resolution. Finer
+    bands are block-averaged onto that grid and coarser bands are repeated.
+    No-data pixels become NaN.
+    """
+
+    from PIL import Image
+
+    safe_folder = Path(safe_folder).expanduser().resolve()
+    quantification, offsets = _l1c_radiometric_scaling(safe_folder)
+    resolution = grid.resolution_m
+    column_start = int(round(
+        (x[0] - 0.5 * resolution - grid.upper_left_x) / resolution
+    ))
+    row_start = int(round(
+        (grid.upper_left_y - (y[0] + 0.5 * resolution)) / resolution
+    ))
+    rows, columns = len(y), len(x)
+
+    bands = tuple(normalize_sentinel2_band_name(name) for name in band_names)
+    reflectance = np.full((len(bands), rows, columns), np.nan, np.float32)
+    previous_limit = Image.MAX_IMAGE_PIXELS
+    # 10 m bands exceed Pillow's decompression-bomb guard.
+    Image.MAX_IMAGE_PIXELS = None
+    try:
+        for index, band in enumerate(bands):
+            paths = sorted(
+                safe_folder.glob(f"GRANULE/*/IMG_DATA/*_{band}.jp2")
+            )
+            if len(paths) != 1:
+                raise FileNotFoundError(
+                    f"expected one {band} image in {safe_folder}"
+                )
+            native = SENTINEL2_NATIVE_RESOLUTION_M[band]
+            if native <= resolution:
+                factor = int(round(resolution / native))
+                box = (
+                    column_start * factor,
+                    row_start * factor,
+                    (column_start + columns) * factor,
+                    (row_start + rows) * factor,
+                )
+                counts = _read_jp2_counts(paths[0], box)
+                counts[counts == 0] = np.nan
+                counts = counts.reshape(
+                    rows, factor, columns, factor
+                ).mean(axis=(1, 3))
+            else:
+                factor = int(round(native / resolution))
+                first_row = row_start // factor
+                first_column = column_start // factor
+                last_row = (row_start + rows - 1) // factor + 1
+                last_column = (column_start + columns - 1) // factor + 1
+                coarse = _read_jp2_counts(
+                    paths[0],
+                    (first_column, first_row, last_column, last_row),
+                )
+                coarse[coarse == 0] = np.nan
+                row_index = (
+                    np.arange(row_start, row_start + rows) // factor
+                    - first_row
+                )
+                column_index = (
+                    np.arange(column_start, column_start + columns)
+                    // factor
+                    - first_column
+                )
+                counts = coarse[np.ix_(row_index, column_index)]
+            reflectance[index] = (
+                counts + offsets.get(band, 0.0)
+            ) / quantification
+    finally:
+        Image.MAX_IMAGE_PIXELS = previous_limit
+
+    output = xr.Dataset(
+        data_vars={
+            "toa_reflectance": (("band", "y", "x"), reflectance),
+        },
+        coords={"band": np.asarray(bands, dtype=str), "x": x, "y": y},
+        attrs={
+            "title": "Sentinel-2 L1C TOA reflectance on the REDRESS grid",
+            "source": str(safe_folder),
+        },
+    )
+    output["toa_reflectance"].attrs.update(
+        long_name="top-of-atmosphere reflectance factor", units="1"
+    )
+    return output
+
+
+def read_snow_fraction_on_grid(
+    path: str | Path,
+    x: np.ndarray,
+    y: np.ndarray,
+) -> np.ndarray:
+    """Read a fractional snow cover raster at the given pixel centres.
+
+    The raster must lie on the same 20 m grid as the centres, in the same
+    UTM zone; ETRS89 and WGS84 zones differ by well under a pixel. Values
+    above one are taken as percentages. Pixels outside the raster or
+    without a value are NaN.
+    """
+
+    from osgeo import gdal, osr
+
+    path = Path(path).expanduser().resolve()
+    dataset = gdal.Open(str(path), gdal.GA_ReadOnly)
+    if dataset is None:
+        raise OSError(f"GDAL cannot read snow fraction: {path}")
+    reference = osr.SpatialReference(wkt=dataset.GetProjection())
+    if reference.GetUTMZone() == 0:
+        raise ValueError("the snow fraction raster must use a UTM CRS")
+    geotransform = dataset.GetGeoTransform()
+    resolution = float(geotransform[1])
+    columns = (x - 0.5 * resolution - geotransform[0]) / resolution
+    rows = (geotransform[3] - (y + 0.5 * resolution)) / -geotransform[5]
+    if not (
+        np.allclose(columns, np.round(columns), atol=1e-3)
+        and np.allclose(rows, np.round(rows), atol=1e-3)
+        and np.isclose(-geotransform[5], resolution)
+    ):
+        raise ValueError(
+            "the snow fraction raster is not on the simulated pixel grid"
+        )
+    band = dataset.GetRasterBand(1)
+    values = band.ReadAsArray().astype(np.float64)
+    nodata = band.GetNoDataValue()
+    if nodata is not None and np.isfinite(nodata):
+        values[values == nodata] = np.nan
+    if np.nanmax(values) > 1.0:
+        values = values / 100.0
+
+    rows = np.round(rows).astype(int)
+    columns = np.round(columns).astype(int)
+    inside_rows = (rows >= 0) & (rows < values.shape[0])
+    inside_columns = (columns >= 0) & (columns < values.shape[1])
+    fraction = np.full((len(y), len(x)), np.nan)
+    fraction[np.ix_(inside_rows, inside_columns)] = values[
+        np.ix_(rows[inside_rows], columns[inside_columns])
+    ]
+    return fraction
+
+
+def reflectance_comparison_table(
+    simulated: xr.Dataset,
+    observed: xr.Dataset,
+    mask: np.ndarray | None = None,
+):
+    """Summarise simulated minus observed TOA reflectance by band.
+
+    ``mask`` restricts the statistics to the (y, x) pixels where it is
+    true, for example pure snow.
+    """
+
+    import pandas as pd
+
+    rows = []
+    for band in simulated["band"].values:
+        model = simulated["toa_reflectance"].sel(band=band).values.ravel()
+        measured = observed["toa_reflectance"].sel(band=band).values.ravel()
+        valid = np.isfinite(model) & np.isfinite(measured)
+        if mask is not None:
+            valid &= np.asarray(mask, dtype=bool).ravel()
+        difference = model[valid] - measured[valid]
+        rows.append({
+            "band": str(band),
+            "pixels": int(valid.sum()),
+            "simulated_mean": float(np.mean(model[valid])),
+            "observed_mean": float(np.mean(measured[valid])),
+            "bias": float(np.mean(difference)),
+            "rmse": float(np.sqrt(np.mean(difference ** 2))),
+            "correlation": float(
+                np.corrcoef(model[valid], measured[valid])[0, 1]
+            ),
+        })
+    return pd.DataFrame(rows)
