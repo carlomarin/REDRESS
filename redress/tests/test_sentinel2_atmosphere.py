@@ -7,6 +7,7 @@ import pytest
 
 from redress.readers.sentinel2_atmosphere import (
     _bilinear_sample,
+    _matching_bands,
     _parse_baseline,
     _read_processing_baseline,
     cams_aerosol_components,
@@ -15,6 +16,52 @@ from redress.readers.sentinel2_atmosphere import (
     ozone_to_cm_atm,
     water_to_g_cm2,
 )
+
+
+class _MetadataBand:
+    """Minimal GDAL-band substitute for field-selection tests."""
+
+    def __init__(self, element, comment):
+        self.element = element
+        self.comment = comment
+
+    def GetMetadata(self):
+        return {
+            "GRIB_ELEMENT": self.element,
+            "GRIB_COMMENT": self.comment,
+        }
+
+    def GetDescription(self):
+        return "0[-] SFC=Ground or water surface"
+
+
+class _MetadataDataset:
+    """Minimal GDAL-dataset substitute containing ordered bands."""
+
+    def __init__(self, bands):
+        self.bands = tuple(bands)
+        self.RasterCount = len(self.bands)
+
+    def GetRasterBand(self, index):
+        return self.bands[index - 1]
+
+
+def test_exact_total_aod_identifier_precedes_species_substrings():
+    bands = (
+        _MetadataBand("aod550", "Total Aerosol Optical Depth at 550nm"),
+        _MetadataBand("bcaod550", "Black Carbon Aerosol Optical Depth at 550nm"),
+        _MetadataBand("duaod550", "Dust Aerosol Optical Depth at 550nm"),
+        _MetadataBand("omaod550", "Organic Matter Aerosol Optical Depth at 550nm"),
+        _MetadataBand("ssaod550", "Sea Salt Aerosol Optical Depth at 550nm"),
+        _MetadataBand("suaod550", "Sulphate Aerosol Optical Depth at 550nm"),
+    )
+
+    matches = _matching_bands(
+        _MetadataDataset(bands),
+        ("aod550", "total aerosol optical depth at 550nm"),
+    )
+
+    assert matches == (bands[0],)
 
 
 def test_official_ecmwf_units_are_converted_for_py6s():

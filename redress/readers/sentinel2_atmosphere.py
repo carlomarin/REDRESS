@@ -268,19 +268,34 @@ def _band_unit(band) -> str:
 
 
 def _matching_bands(dataset, aliases: Sequence[str]):
-    """Yield GDAL bands whose metadata match a requested field."""
+    """Return GDAL bands whose metadata match a requested field.
+
+    Exact identifiers take precedence over descriptive substring matches.
+    This distinction is required for CAMS: ``aod550`` is contained in every
+    species name, including ``bcaod550`` and ``duaod550``, but only the total
+    AOD band has the exact identifier ``aod550``.
+    """
 
     aliases = tuple(_normalise_text(alias) for alias in aliases)
+    exact_matches = []
+    descriptive_matches = []
     for index in range(1, dataset.RasterCount + 1):
         band = dataset.GetRasterBand(index)
         identifiers = _band_identifiers(band)
         if any(
             alias == identifier
-            or (len(alias) > 3 and alias in identifier)
             for alias in aliases
             for identifier in identifiers
         ):
-            yield band
+            exact_matches.append(band)
+        elif any(
+            len(alias) > 3 and alias in identifier
+            for alias in aliases
+            for identifier in identifiers
+        ):
+            descriptive_matches.append(band)
+
+    return tuple(exact_matches or descriptive_matches)
 
 
 def _site_in_dataset_coordinates(dataset, site: Sentinel2Site) -> tuple[float, float]:
