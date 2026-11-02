@@ -66,6 +66,59 @@ def symmetric_v_valley_local_wall_view_factor(wall_slope_degree):
     return np.sin(np.deg2rad(wall_slope_degree)) ** 2
 
 
+def symmetric_v_valley_finite_wall_view_factor(
+    wall_slope_degree,
+    sample_distance_m,
+    wall_extent_m,
+    valley_half_length_m,
+):
+    """Return the exact view factor from a wall point to the finite opposite wall.
+
+    The sample point lies on wall A at horizontal distance
+    ``sample_distance_m`` from the valley axis. Wall B is the planar
+    rectangle that rises from the axis to ``wall_extent_m`` across the
+    valley and spans ``±valley_half_length_m`` along it. Wall B is fully
+    visible from wall A, and the flat rims are seen edge-on from below, so
+    the factor follows from the contour-integral formula for a differential
+    element and a planar polygon:
+
+    ``F = (1 / 2π) Σ γ_i n·(R_i × R_i+1) / |R_i × R_i+1|``,
+
+    where ``R_i`` are the vectors to the polygon vertices and ``γ_i`` the
+    angles they subtend. As both wall dimensions tend to infinity, the
+    result tends to sin²β; see
+    :func:`symmetric_v_valley_local_wall_view_factor`.
+    """
+
+    if not 0.0 < wall_slope_degree < 90.0:
+        raise ValueError("wall_slope_degree must be in (0, 90) degrees")
+    if not 0.0 < sample_distance_m <= wall_extent_m:
+        raise ValueError("sample_distance_m must lie in (0, wall_extent_m]")
+    if not valley_half_length_m > 0.0:
+        raise ValueError("valley_half_length_m must be positive")
+
+    slope = np.deg2rad(wall_slope_degree)
+    tangent = np.tan(slope)
+    # East, north and up. Wall A lies to the south and faces north.
+    point = np.array([0.0, -sample_distance_m, sample_distance_m * tangent])
+    normal = np.array([0.0, np.sin(slope), np.cos(slope)])
+    rim = wall_extent_m * tangent
+    vertices = np.array([
+        [-valley_half_length_m, 0.0, 0.0],
+        [valley_half_length_m, 0.0, 0.0],
+        [valley_half_length_m, wall_extent_m, rim],
+        [-valley_half_length_m, wall_extent_m, rim],
+    ])
+    rays = vertices - point
+    total = 0.0
+    for start, end in zip(rays, np.roll(rays, -1, axis=0)):
+        cross = np.cross(start, end)
+        cosine = start @ end / (np.linalg.norm(start) * np.linalg.norm(end))
+        angle = np.arccos(np.clip(cosine, -1.0, 1.0))
+        total += angle * (normal @ cross) / np.linalg.norm(cross)
+    return abs(total) / (2.0 * np.pi)
+
+
 def solve_two_wall_irradiance(
     irradiance_a_0,
     irradiance_b_0,

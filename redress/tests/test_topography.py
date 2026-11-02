@@ -23,6 +23,7 @@ from redress.topography.idealized import (
     solve_two_wall_irradiance,
     symmetric_v_valley,
     uniform_slope,
+    symmetric_v_valley_finite_wall_view_factor,
     symmetric_v_valley_local_wall_view_factor,
     symmetric_v_valley_wall_view_factor,
 )
@@ -154,6 +155,34 @@ class Test_dem_prods(object):
         )
         assert symmetric_v_valley_local_wall_view_factor(50.0) == approx(
             np.sin(np.deg2rad(50.0)) ** 2
+        )
+
+    def test_finite_wall_view_factor_matches_two_dimensional_limit(self):
+        # For an infinitely long valley the crossed-string derivative
+        # gives F = (1 - (a + b cos 2β) / d) / 2 with a, b slant lengths.
+        slope = np.deg2rad(45.0)
+        a = 500.0 / np.cos(slope)
+        b = 1000.0 / np.cos(slope)
+        d = np.sqrt(a ** 2 + b ** 2 + 2.0 * a * b * np.cos(2.0 * slope))
+        expected = 0.5 * (1.0 - (a + b * np.cos(2.0 * slope)) / d)
+        assert symmetric_v_valley_finite_wall_view_factor(
+            45.0, 500.0, 1000.0, 1e8
+        ) == approx(expected, rel=1e-6)
+
+    def test_finite_wall_view_factor_tends_to_infinite_wall_limit(self):
+        assert symmetric_v_valley_finite_wall_view_factor(
+            55.0, 1.0, 1e6, 1e9
+        ) == approx(symmetric_v_valley_local_wall_view_factor(55.0), rel=1e-4)
+
+    def test_finite_wall_view_factor_grows_with_valley_length(self):
+        short = symmetric_v_valley_finite_wall_view_factor(
+            45.0, 500.0, 1000.0, 1000.0
+        )
+        long = symmetric_v_valley_finite_wall_view_factor(
+            45.0, 500.0, 1000.0, 3000.0
+        )
+        assert 0.0 < short < long < symmetric_v_valley_local_wall_view_factor(
+            45.0
         )
 
     def test_two_wall_solution_satisfies_exchange_equations(self):

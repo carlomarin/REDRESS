@@ -34,6 +34,7 @@ from redress.topography.idealized import (
     narrow_couloir,
     solve_two_wall_irradiance,
     symmetric_v_valley,
+    symmetric_v_valley_finite_wall_view_factor,
     symmetric_v_valley_local_wall_view_factor,
     symmetric_v_valley_wall_view_factor,
     uniform_slope,
@@ -52,6 +53,7 @@ DOMAIN_HALF_WIDTH_M = 3000.0
 GRID_SIZE = int(2 * DOMAIN_HALF_WIDTH_M / PIXEL_RESOLUTION_M) + 1
 HORIZON_HALF_DIRECTIONS = 32  # Produces 64 azimuth directions.
 
+V_VALLEY_WALL_EXTENT_M = 1000.0
 TERRAIN_WINDOW_WIDTH_M = 1500.0
 # Ray length of the visible-exitance kernel. It spans the full 1 km valley
 # walls from any wall pixel, unlike the 750 m terrain-window half-width.
@@ -159,6 +161,7 @@ def build_terrain_suite():
             GRID_SIZE,
             PIXEL_RESOLUTION_M,
             wall_slope_degree=wall_slope,
+            wall_extent_m=V_VALLEY_WALL_EXTENT_M,
         )
         for wall_slope in (25.0, 45.0, 55.0)
     )
@@ -551,6 +554,22 @@ def two_wall_benchmark_records(
     )
     reflectance_a = float(bhr[row_a, column_a])
     reflectance_b = float(bhr[row_b, column_b])
+    # The two sample points mirror each other, so one factor serves both
+    # walls. The walls end at their rims and at the domain edge along the
+    # valley.
+    finite_factor = symmetric_v_valley_finite_wall_view_factor(
+        wall_slope,
+        sample_distance_m=abs(sample.northing_m),
+        wall_extent_m=V_VALLEY_WALL_EXTENT_M,
+        valley_half_length_m=DOMAIN_HALF_WIDTH_M,
+    )
+    finite_solution = solve_two_wall_irradiance(
+        illumination_a["total"],
+        illumination_b["total"],
+        finite_factor,
+        reflectance_a,
+        reflectance_b,
+    )
     local_infinite_factor = (
         symmetric_v_valley_local_wall_view_factor(wall_slope)
     )
@@ -590,6 +609,7 @@ def two_wall_benchmark_records(
         "sky_diffuse_irradiance_b": illumination_b["sky_diffuse"],
         "pre_exchange_irradiance_a": illumination_a["total"],
         "pre_exchange_irradiance_b": illumination_b["total"],
+        "finite_wall_view_factor": finite_factor,
         "local_infinite_view_factor": local_infinite_factor,
     }
 
@@ -621,6 +641,9 @@ def two_wall_benchmark_records(
         raster_two_wall_terrain = float(
             raster_solution[f"terrain_irradiance_{side}"]
         )
+        finite_two_wall_terrain = float(
+            finite_solution[f"terrain_irradiance_{side}"]
+        )
         infinite_two_wall_terrain = float(
             infinite_solution[f"terrain_irradiance_{side}"]
         )
@@ -631,12 +654,18 @@ def two_wall_benchmark_records(
             "raster_view_factor": raster_factor,
             "redress_terrain_irradiance": redress_terrain,
             "two_wall_raster_terrain_irradiance": raster_two_wall_terrain,
+            "two_wall_finite_terrain_irradiance": finite_two_wall_terrain,
             "two_wall_infinite_terrain_irradiance": (
                 infinite_two_wall_terrain
             ),
             "redress_vs_raster_two_wall_percent": (
                 100.0 * (redress_terrain / raster_two_wall_terrain - 1.0)
                 if raster_two_wall_terrain != 0.0
+                else np.nan
+            ),
+            "redress_vs_finite_two_wall_percent": (
+                100.0 * (redress_terrain / finite_two_wall_terrain - 1.0)
+                if finite_two_wall_terrain != 0.0
                 else np.nan
             ),
             "redress_vs_infinite_two_wall_percent": (
