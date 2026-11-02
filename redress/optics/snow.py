@@ -18,6 +18,12 @@ DUST_MODELS = ("muller2011", "skiles2014")
 # albedo from the TARTES two-stream model, which stays accurate when ice
 # absorbs strongly, as in Sentinel-2 B11 and B12.
 SNOW_ALBEDO_MODELS = ("art", "tartes")
+# TARTES grain-shape parameterization and ice refractive index. "constant"
+# with "w2008" matches the ART albedo; TARTES's own defaults are
+# "robledano23", which sets B from the wavelength-dependent refractive
+# index, and "p2016".
+TARTES_SHAPE_PARAMETERIZATION = "constant"
+TARTES_REFRACTIVE_INDEX = "w2008"
 
 
 def lap_impurities(
@@ -88,21 +94,25 @@ def _validate_albedo_model(albedo_model, impurities):
         )
 
 
-def _tartes_albedo(wavelength_nm, ssa, zenith_degree, B, g):
+def _tartes_albedo(wavelength_nm, ssa, zenith_degree, B, g,
+                   shape_parameterization=None, refractive_index=None):
     """Semi-infinite TARTES albedo; ``zenith_degree=None`` is diffuse.
 
-    B and g are held constant, as in the ART albedo, so the two models
-    differ only in their radiative transfer.
+    By default B and g are held constant and the ice refractive index is
+    the one used by the ART albedo, so the two models differ only in their
+    radiative transfer. See ``TARTES_SHAPE_PARAMETERIZATION``.
     """
 
     import tartes
 
     options = {
         "density": 300.0,  # A semi-infinite albedo does not depend on it.
-        "shape_parameterization": "constant",
+        "shape_parameterization": (
+            shape_parameterization or TARTES_SHAPE_PARAMETERIZATION
+        ),
         "B0": B,
         "g0": g,
-        "refrac_index": "w2008",
+        "refrac_index": refractive_index or TARTES_REFRACTIVE_INDEX,
     }
     if zenith_degree is None:
         return float(tartes.albedo(
@@ -115,14 +125,16 @@ def _tartes_albedo(wavelength_nm, ssa, zenith_degree, B, g):
 
 
 @lru_cache(maxsize=4096)
-def _tartes_directional_table(wavelength_nm, ssa, B, g):
+def _tartes_directional_table(wavelength_nm, ssa, B, g,
+                              shape_parameterization, refractive_index):
     """TARTES directional albedo on the closure nodes plus mu = 0 and 1."""
 
     mu, _ = _closure_nodes()
     mu = np.concatenate(([0.0], mu, [1.0]))
     albedo = np.array([
         _tartes_albedo(
-            wavelength_nm, ssa, float(np.degrees(np.arccos(value))), B, g
+            wavelength_nm, ssa, float(np.degrees(np.arccos(value))), B, g,
+            shape_parameterization, refractive_index,
         )
         for value in mu
     ])
@@ -131,7 +143,8 @@ def _tartes_directional_table(wavelength_nm, ssa, B, g):
 
 def _directional_albedo_tartes(wavelength_nm, zenith, ssa, B, g):
     mu, albedo = _tartes_directional_table(
-        float(wavelength_nm), float(ssa), float(B), float(g)
+        float(wavelength_nm), float(ssa), float(B), float(g),
+        TARTES_SHAPE_PARAMETERIZATION, TARTES_REFRACTIVE_INDEX,
     )
     return np.interp(np.cos(zenith), mu, albedo)
 
