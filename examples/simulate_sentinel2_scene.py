@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Simulate a Sentinel-2 TOA snow image over a DEM.
+"""Simulate the central Sentinel-2 pixel over a 20 m DEM.
 
-Edit the constants in the configuration section and run:
+The L1C SAFE auxiliary files provide water vapour, ozone and, from processing
+baseline 04.00 onward, CAMS aerosol optical depth and species. ``MTD_TL.xml``
+provides the acquisition time and mean solar and viewing geometry.
+
+Edit the configuration below and run:
 
     python examples/simulate_sentinel2_scene.py
 
-The DEM must be projected in metres, north-up, and use square pixels. It
-should include a terrain buffer outside the final area of interest so that
-horizons and neighbouring-slope illumination are not truncated at its edge.
+The DEM supplies terrain context around the selected central pixel. For the
+default 2.1 km atmospheric window it must contain at least 105 by 105 cells.
+Additional terrain outside this extent improves the horizon calculation.
 """
 
 from pathlib import Path
 
 from redress.simulation.sentinel2_scene import (
-    Sentinel2Atmosphere,
-    Sentinel2Geometry,
     SnowSurface,
+    central_pixel_spectrum,
     read_dem,
+    read_sentinel2_auxiliary_data,
     simulate_sentinel2_scene,
-    write_multiband_geotiff,
-    write_scene_netcdf,
+    validate_central_pixel_context,
+    write_central_pixel_csv,
 )
 
 
@@ -28,29 +32,13 @@ from redress.simulation.sentinel2_scene import (
 # Configuration
 # ---------------------------------------------------------------------------
 
-DEM_FILE = Path("/path/to/buffered_dem_20m.tif")
-OUTPUT_DIRECTORY = Path("outputs/sentinel2_scene")
+DEM_FILE = Path("/path/to/dem_20m_with_terrain_buffer.tif")
+L1C_SAFE_FOLDER = Path("/path/to/S2B_MSIL1C_YYYYMMDD...SAFE")
+MTD_TL_FILE = Path("/path/to/S2B_MSIL1C_...SAFE/GRANULE/.../MTD_TL.xml")
+OUTPUT_DIRECTORY = Path("outputs/sentinel2_central_pixel")
 
 PLATFORM = "S2B"
 BANDS = ("B02", "B03", "B04", "B05", "B06", "B07", "B8A", "B11", "B12")
-
-# Sentinel-2 metadata angles. Azimuth is clockwise from geographic north.
-GEOMETRY = Sentinel2Geometry(
-    solar_zenith_deg=45.0,
-    solar_azimuth_deg=180.0,
-    view_zenith_deg=5.0,
-    view_azimuth_deg=0.0,
-)
-
-# Py6S units: water vapour in g cm-2, ozone in cm-atm, AOD at 550 nm.
-ATMOSPHERE = Sentinel2Atmosphere(
-    aerosol="Continental",
-    aod550=0.10,
-    water_vapour_g_cm2=1.0,
-    ozone_cm_atm=0.30,
-    month=3,
-    day=28,
-)
 
 SNOW = SnowSurface(
     specific_surface_area_m2_kg=20.0,
@@ -58,29 +46,63 @@ SNOW = SnowSurface(
     dust_ug_g=0.0,
 )
 
-# N=32 produces 64 horizon directions. Neighbour exitance is currently the
-# practical choice for an image-sized raster. Visible exitance can be used on
-# small tiles while its view-factor geometry is being optimized and validated.
-HORIZON_HALF_DIRECTIONS = 32
+# Products before processing baseline 04.00 do not contain CAMS aerosol
+# fields. Set an explicit AOD550 only for those products; otherwise keep None.
+LEGACY_AOD550 = None
+LEGACY_AEROSOL_MODEL = "Continental"
+
+HORIZON_HALF_DIRECTIONS = 32  # 64 azimuth directions.
 TERRAIN_CONFIGURATION_METHOD = "hemispheric_closure"
 TERRAIN_REFLECTION_METHOD = "neighbour_exitance"
 TERRAIN_WINDOW_WIDTH_M = 1500.0
 ATMOSPHERE_WINDOW_WIDTH_M = 2100.0
 
-# None uses one scene-mean atmospheric calculation. A value such as 250.0
-# interpolates 6S outputs over elevation. Leave this disabled when the supplied
-# water and aerosol columns have already been corrected to one site elevation.
-ATMOSPHERE_ALTITUDE_STEP_M = None
-
 
 def main() -> None:
-    """Run the simulation and write QGIS-compatible outputs."""
+    """Read the physical inputs and simulate the DEM central pixel."""
 
     dem = read_dem(DEM_FILE)
+    validate_central_pixel_context(
+        dem,
+        maximum_window_width_m=max(
+            TERRAIN_WINDOW_WIDTH_M,
+            ATMOSPHERE_WINDOW_WIDTH_M,
+        ),
+    )
+    auxiliary = read_sentinel2_auxiliary_data(
+        L1C_SAFE_FOLDER,
+        MTD_TL_FILE,
+        dem,
+        band_names=BANDS,
+        legacy_aod550=LEGACY_AOD550,
+        legacy_aerosol_model=LEGACY_AEROSOL_MODEL,
+    )
+
+    print(
+        "Central pixel: "
+        f"{auxiliary.site.latitude_deg:.6f}°, "
+        f"{auxiliary.site.longitude_deg:.6f}°, "
+        f"{auxiliary.site.elevation_m:.1f} m"
+    )
+    print(f"Acquisition: {auxiliary.acquisition_time.isoformat()}")
+    print(
+        "Geometry: "
+        f"SZA={auxiliary.geometry.solar_zenith_deg:.3f}°, "
+        f"SAA={auxiliary.geometry.solar_azimuth_deg:.3f}°, "
+        f"VZA={auxiliary.geometry.view_zenith_deg:.3f}°, "
+        f"VAA={auxiliary.geometry.view_azimuth_deg:.3f}°"
+    )
+    print(
+        "Atmosphere: "
+        f"AOD550={auxiliary.atmosphere.aod550:.4f}, "
+        f"water={auxiliary.atmosphere.water_vapour_g_cm2:.4f} g cm-2, "
+        f"ozone={auxiliary.atmosphere.ozone_cm_atm:.4f} cm-atm"
+    )
+
     scene = simulate_sentinel2_scene(
         dem,
-        GEOMETRY,
-        ATMOSPHERE,
+        auxiliary.geometry,
+        auxiliary.atmosphere,
         SNOW,
         platform=PLATFORM,
         band_names=BANDS,
@@ -90,29 +112,33 @@ def main() -> None:
         terrain_reflection_method=TERRAIN_REFLECTION_METHOD,
         terrain_window_width_m=TERRAIN_WINDOW_WIDTH_M,
         atmosphere_window_width_m=ATMOSPHERE_WINDOW_WIDTH_M,
-        atmosphere_altitude_step_m=ATMOSPHERE_ALTITUDE_STEP_M,
+        # AUX columns were corrected to the central DEM elevation. Keeping
+        # this disabled prevents applying one corrected column to other
+        # elevation nodes or correcting it twice.
+        atmosphere_altitude_step_m=None,
         verbose=True,
     )
 
-    netcdf_file = write_scene_netcdf(
-        scene, dem, OUTPUT_DIRECTORY / "sentinel2_redress_scene.nc"
+    spectrum = central_pixel_spectrum(scene, dem)
+    output_csv = write_central_pixel_csv(
+        spectrum,
+        OUTPUT_DIRECTORY / "sentinel2_central_pixel_spectrum.csv",
     )
-    reflectance_file = write_multiband_geotiff(
-        scene,
-        dem,
-        OUTPUT_DIRECTORY / "sentinel2_toa_reflectance.tif",
-        variable="toa_reflectance",
-    )
-    radiance_file = write_multiband_geotiff(
-        scene,
-        dem,
-        OUTPUT_DIRECTORY / "sentinel2_toa_radiance.tif",
-        variable="toa_radiance",
-    )
+    OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    output_netcdf = OUTPUT_DIRECTORY / "sentinel2_central_pixel_spectrum.nc"
+    spectrum.to_netcdf(output_netcdf, engine="netcdf4")
 
-    print(f"NetCDF: {netcdf_file}")
-    print(f"TOA reflectance: {reflectance_file}")
-    print(f"TOA radiance: {radiance_file}")
+    print("\nSimulated central-pixel spectrum:")
+    print(
+        spectrum[["toa_reflectance", "toa_radiance"]]
+        .to_dataframe()
+        .reset_index()[
+            ["band", "wavelength_nm", "toa_reflectance", "toa_radiance"]
+        ]
+        .to_string(index=False)
+    )
+    print(f"\nCSV: {output_csv}")
+    print(f"NetCDF: {output_netcdf.resolve()}")
 
 
 if __name__ == "__main__":

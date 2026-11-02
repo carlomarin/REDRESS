@@ -14,12 +14,23 @@ boundary omit terrain outside the raster.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import xarray as xr
 
 from redress.inputs.products import Dem, Model
+from redress.inputs.sentinel2 import (
+    SENTINEL2_BAND_NAMES,
+    normalize_sentinel2_band_name,
+)
+from redress.readers.sentinel2_atmosphere import (
+    Sentinel2AtmosphericInputs,
+    Sentinel2Site,
+    read_sentinel2_l1c_atmosphere,
+)
 
 
 DEFAULT_BANDS = (
@@ -115,6 +126,136 @@ class SnowSurface:
                 raise ValueError(f"{name} must be finite and non-negative")
 
 
+@dataclass(frozen=True)
+class Sentinel2AuxiliaryData:
+    """Geometry, acquisition time and atmosphere sampled for one DEM pixel."""
+
+    geometry: Sentinel2Geometry
+    atmosphere: Sentinel2Atmosphere
+    site: Sentinel2Site
+    atmospheric_inputs: Sentinel2AtmosphericInputs
+    acquisition_time: datetime
+
+
+def _local_name(element) -> str:
+    """Return an XML element name without its namespace."""
+
+    return element.tag.rsplit("}", maxsplit=1)[-1]
+
+
+def _child_float(element, name: str) -> float:
+    """Read one finite floating-point value from a direct XML child."""
+
+    matches = [
+        child for child in element if _local_name(child) == name
+    ]
+    if len(matches) != 1 or matches[0].text is None:
+        raise ValueError(
+            f"expected one {name} value inside {_local_name(element)}"
+        )
+    value = float(matches[0].text)
+    if not np.isfinite(value):
+        raise ValueError(f"{name} contains a non-finite value")
+    return value
+
+
+def _mean_viewing_direction(viewing_angles):
+    """Average viewing directions on the unit sphere."""
+
+    zenith = np.deg2rad([item[0] for item in viewing_angles])
+    azimuth = np.deg2rad([item[1] for item in viewing_angles])
+    east = np.mean(np.sin(zenith) * np.sin(azimuth))
+    north = np.mean(np.sin(zenith) * np.cos(azimuth))
+    upward = np.mean(np.cos(zenith))
+    norm = np.sqrt(east ** 2 + north ** 2 + upward ** 2)
+    view_zenith = np.rad2deg(np.arccos(np.clip(upward / norm, -1.0, 1.0)))
+    view_azimuth = np.mod(np.rad2deg(np.arctan2(east, north)), 360.0)
+    return float(view_zenith), float(view_azimuth)
+
+
+def read_mtd_tl_geometry(
+    mtd_tl_file: str | Path,
+    band_names: Sequence[str] = DEFAULT_BANDS,
+) -> tuple[Sentinel2Geometry, datetime]:
+    """Read mean solar and selected-band viewing geometry from ``MTD_TL.xml``.
+
+    The current REDRESS model accepts one viewing geometry for all bands.
+    The band-specific mean directions stored in the metadata are therefore
+    averaged as three-dimensional unit vectors. Solar geometry is common to
+    every MSI band.
+    """
+
+    mtd_tl_file = Path(mtd_tl_file).expanduser().resolve()
+    if not mtd_tl_file.is_file():
+        raise FileNotFoundError(f"MTD_TL metadata not found: {mtd_tl_file}")
+    root = ET.parse(mtd_tl_file).getroot()
+
+    sensing_times = [
+        (element.text or "").strip()
+        for element in root.iter()
+        if _local_name(element) == "SENSING_TIME"
+    ]
+    if len(sensing_times) != 1:
+        raise ValueError(
+            f"{mtd_tl_file}: expected one SENSING_TIME; "
+            f"found {len(sensing_times)}"
+        )
+    acquisition_time = datetime.fromisoformat(
+        sensing_times[0].replace("Z", "+00:00")
+    )
+
+    mean_sun = [
+        element for element in root.iter()
+        if _local_name(element) == "Mean_Sun_Angle"
+    ]
+    if len(mean_sun) != 1:
+        raise ValueError(
+            f"{mtd_tl_file}: expected one Mean_Sun_Angle; "
+            f"found {len(mean_sun)}"
+        )
+    solar_zenith = _child_float(mean_sun[0], "ZENITH_ANGLE")
+    solar_azimuth = _child_float(mean_sun[0], "AZIMUTH_ANGLE")
+
+    requested_bands = tuple(
+        normalize_sentinel2_band_name(name) for name in band_names
+    )
+    band_id_to_name = dict(enumerate(SENTINEL2_BAND_NAMES))
+    viewing_by_band = {}
+    for element in root.iter():
+        if _local_name(element) != "Mean_Viewing_Incidence_Angle":
+            continue
+        band_id = element.attrib.get("bandId")
+        if band_id is None:
+            continue
+        try:
+            band_name = band_id_to_name[int(band_id)]
+        except (KeyError, ValueError) as error:
+            raise ValueError(
+                f"invalid Sentinel-2 bandId {band_id!r} in {mtd_tl_file}"
+            ) from error
+        viewing_by_band[band_name] = (
+            _child_float(element, "ZENITH_ANGLE"),
+            _child_float(element, "AZIMUTH_ANGLE"),
+        )
+
+    missing = set(requested_bands).difference(viewing_by_band)
+    if missing:
+        raise ValueError(
+            f"{mtd_tl_file}: missing mean viewing angles for "
+            + ", ".join(sorted(missing))
+        )
+    viewing_angles = [viewing_by_band[name] for name in requested_bands]
+    view_zenith, view_azimuth = _mean_viewing_direction(viewing_angles)
+    geometry = Sentinel2Geometry(
+        solar_zenith_deg=solar_zenith,
+        solar_azimuth_deg=solar_azimuth,
+        view_zenith_deg=view_zenith,
+        view_azimuth_deg=view_azimuth,
+    )
+    geometry.validate()
+    return geometry, acquisition_time
+
+
 def _raster_coordinates(geotransform, shape):
     """Return one-dimensional centre coordinates for a north-up raster."""
 
@@ -181,6 +322,118 @@ def read_dem(path: str | Path) -> Dem:
     dem.pixel_size = (geotransform[1], geotransform[5])
     dem.crs_wkt = dataset.GetProjection()
     return dem
+
+
+def central_pixel_indices(dem: Dem) -> tuple[int, int]:
+    """Return the row and column of the DEM central pixel."""
+
+    rows, columns = dem.bands["altitude"].shape
+    return rows // 2, columns // 2
+
+
+def central_pixel_site(dem: Dem, name: str = "central_pixel") -> Sentinel2Site:
+    """Return the WGS84 position and DEM elevation of the central pixel."""
+
+    from pyproj import CRS, Transformer
+
+    row, column = central_pixel_indices(dem)
+    x = (
+        dem.geotransform[0]
+        + (column + 0.5) * dem.geotransform[1]
+        + (row + 0.5) * dem.geotransform[2]
+    )
+    y = (
+        dem.geotransform[3]
+        + (column + 0.5) * dem.geotransform[4]
+        + (row + 0.5) * dem.geotransform[5]
+    )
+    transformer = Transformer.from_crs(
+        CRS.from_wkt(dem.crs_wkt), CRS.from_epsg(4326), always_xy=True
+    )
+    longitude, latitude = transformer.transform(x, y)
+    elevation = float(dem.bands["altitude"].values[row, column])
+    site = Sentinel2Site(
+        latitude_deg=float(latitude),
+        longitude_deg=float(longitude),
+        elevation_m=elevation,
+        name=name,
+    )
+    site.validate()
+    return site
+
+
+def read_sentinel2_auxiliary_data(
+    safe_folder: str | Path,
+    mtd_tl_file: str | Path,
+    dem: Dem,
+    band_names: Sequence[str] = DEFAULT_BANDS,
+    *,
+    legacy_aod550: float | None = None,
+    legacy_aerosol_model: str = "Continental",
+) -> Sentinel2AuxiliaryData:
+    """Prepare central-pixel geometry and Py6S atmosphere from an L1C SAFE.
+
+    Water vapour and aerosol optical depth are corrected from the CAMS model
+    surface to the central DEM elevation. Ozone is left unchanged. The result
+    should be used with a scene-mean 6S altitude, because the corrected columns
+    describe this central pixel rather than every elevation in the DEM.
+    """
+
+    geometry, acquisition_time = read_mtd_tl_geometry(
+        mtd_tl_file, band_names=band_names
+    )
+    site = central_pixel_site(dem)
+    inputs = read_sentinel2_l1c_atmosphere(
+        safe_folder,
+        site,
+        apply_elevation_correction=True,
+        legacy_aod550=legacy_aod550,
+        legacy_aerosol_model=legacy_aerosol_model,
+    )
+    aerosol = (
+        dict(inputs.aerosol_components)
+        if inputs.aerosol_components is not None
+        else inputs.aerosol_model
+    )
+    atmosphere = Sentinel2Atmosphere(
+        aerosol=aerosol,
+        aod550=inputs.aod550,
+        water_vapour_g_cm2=inputs.water_vapour_g_cm2,
+        ozone_cm_atm=inputs.ozone_cm_atm,
+        month=acquisition_time.month,
+        day=acquisition_time.day,
+    )
+    atmosphere.validate()
+    return Sentinel2AuxiliaryData(
+        geometry=geometry,
+        atmosphere=atmosphere,
+        site=site,
+        atmospheric_inputs=inputs,
+        acquisition_time=acquisition_time,
+    )
+
+
+def validate_central_pixel_context(
+    dem: Dem,
+    maximum_window_width_m: float,
+) -> None:
+    """Check that the central pixel is unaffected by moving-window edges."""
+
+    pixel_size = abs(float(dem.pixel_size[0]))
+    if not np.isclose(pixel_size, 20.0, rtol=0.0, atol=1e-3):
+        raise ValueError(
+            f"this workflow requires a 20 m DEM; found {pixel_size:g} m"
+        )
+    window_pixels = int(np.ceil(maximum_window_width_m / pixel_size))
+    if window_pixels % 2 == 0:
+        window_pixels += 1
+    rows, columns = dem.bands["altitude"].shape
+    if rows < window_pixels or columns < window_pixels:
+        raise ValueError(
+            "the DEM is too small to simulate an edge-independent central "
+            f"pixel: at least {window_pixels} by {window_pixels} cells are "
+            f"required, found {rows} by {columns}"
+        )
 
 
 def _constant_angles(dem: Dem, geometry: Sentinel2Geometry) -> xr.Dataset:
@@ -351,6 +604,32 @@ def simulate_sentinel2_scene(
         ozone_cm_atm=atmosphere.ozone_cm_atm,
     )
     return output
+
+
+def central_pixel_spectrum(scene: xr.Dataset, dem: Dem) -> xr.Dataset:
+    """Extract the simulated spectrum and diagnostics at the DEM centre."""
+
+    row, column = central_pixel_indices(dem)
+    central = scene.isel(y=row, x=column, drop=False).copy()
+    central.attrs.update(
+        source_row=row,
+        source_column=column,
+        spatial_selection="central DEM pixel",
+    )
+    return central
+
+
+def write_central_pixel_csv(
+    spectrum: xr.Dataset,
+    path: str | Path,
+) -> Path:
+    """Write the central Sentinel-2 spectrum and its coordinates as CSV."""
+
+    path = Path(path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    table = spectrum[["toa_reflectance", "toa_radiance"]].to_dataframe()
+    table.reset_index().to_csv(path, index=False)
+    return path
 
 
 def _with_cf_grid_mapping(scene: xr.Dataset, dem: Dem) -> xr.Dataset:
