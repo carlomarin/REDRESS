@@ -170,6 +170,9 @@ def _mean_viewing_direction(viewing_angles):
     norm = np.sqrt(east ** 2 + north ** 2 + upward ** 2)
     view_zenith = np.rad2deg(np.arccos(np.clip(upward / norm, -1.0, 1.0)))
     view_azimuth = np.mod(np.rad2deg(np.arctan2(east, north)), 360.0)
+    # A tiny negative angle just west of north rounds to exactly 360.
+    if view_azimuth >= 360.0:
+        view_azimuth = 0.0
     return float(view_zenith), float(view_azimuth)
 
 
