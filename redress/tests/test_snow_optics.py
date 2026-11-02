@@ -3,6 +3,7 @@
 """Regression tests for REDRESS snow-optics wrappers."""
 
 import numpy as np
+import pytest
 
 from redress.optics.snow import (
     albedo_kokhanovsky,
@@ -119,3 +120,74 @@ def test_black_carbon_reduces_visible_albedo_and_brf():
 
     assert polluted_albedo < clean_albedo
     assert polluted_brf < clean_brf
+
+
+def _hemispheric_brf_integral(theta_i, wavelength_nm, ssa, **options):
+    view_zenith = np.linspace(0.0, np.pi / 2.0, 361)[1:-1]
+    azimuth = np.linspace(0.0, 2.0 * np.pi, 721)
+    zenith_grid, azimuth_grid = np.meshgrid(
+        view_zenith, azimuth, indexing="ij"
+    )
+    brf = brf_kokhanovsky(
+        theta_i, zenith_grid, azimuth_grid, wavelength_nm, ssa, **options
+    )
+    integrand = brf * np.cos(zenith_grid) * np.sin(zenith_grid)
+    return np.trapezoid(
+        np.trapezoid(integrand, azimuth, axis=1), view_zenith
+    ) / np.pi
+
+
+def test_brf_integrates_to_the_directional_albedo():
+    # B11 with coarse snow is where the asymptotic BRF overshoots most.
+    for wavelength_nm in (560.0, 1610.0):
+        for incidence_degree in (0.0, 45.0, 75.0):
+            incidence = np.deg2rad(incidence_degree)
+            albedo = directional_albedo_kokhanovsky(
+                np.array(wavelength_nm), incidence, 20.0
+            )
+            assert _hemispheric_brf_integral(
+                incidence, wavelength_nm, 20.0
+            ) == pytest.approx(float(albedo), rel=2e-3)
+
+
+def test_unclosed_brf_overshoots_the_albedo_in_swir():
+    incidence = np.deg2rad(45.0)
+    albedo = directional_albedo_kokhanovsky(np.array(1610.0), incidence, 20.0)
+
+    unclosed = _hemispheric_brf_integral(
+        incidence, 1610.0, 20.0, close_on_albedo=False
+    )
+
+    assert unclosed > 1.2 * float(albedo)
+
+
+def test_closed_brf_is_reciprocal():
+    forward = brf_kokhanovsky(0.4, 1.1, 0.7, 1610.0, 20.0)
+    reverse = brf_kokhanovsky(1.1, 0.4, 0.7, 1610.0, 20.0)
+
+    assert forward == pytest.approx(reverse, rel=1e-12)
+
+
+def test_brf_shares_the_albedo_absorption(monkeypatch):
+    def fake_compute_alpha(wavelength_m, ssa, **kwargs):
+        return 0.49
+
+    monkeypatch.setattr(
+        "redress.optics.snow.so.compute_alpha", fake_compute_alpha
+    )
+
+    brf = brf_kokhanovsky(
+        0.3, 0.2, 1.0, 800.0, 20.0, close_on_albedo=False
+    )
+
+    cos_i, cos_v = np.cos(0.3), np.cos(0.2)
+    theta = np.degrees(np.arccos(
+        -cos_i * cos_v + np.sin(0.3) * np.sin(0.2) * np.cos(1.0)
+    ))
+    phase = 11.1 * np.exp(-0.087 * theta) + 1.1 * np.exp(-0.014 * theta)
+    r0 = (
+        1.247 + 1.186 * (cos_i + cos_v) + 5.157 * cos_i * cos_v + phase
+    ) / (4.0 * (cos_i + cos_v))
+    u_i = 3.0 / 7.0 * (1.0 + 2.0 * cos_i)
+    u_v = 3.0 / 7.0 * (1.0 + 2.0 * cos_v)
+    assert brf == pytest.approx(r0 * np.exp(-0.7 * u_i * u_v / r0))

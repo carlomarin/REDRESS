@@ -182,23 +182,96 @@ def directional_albedo_kokhanovsky(
     return np.exp(-np.sqrt(alpha) * angular_factor)
 
 
+# Quadrature used to close the BRF on the directional albedo.
+_CLOSURE_ZENITH_NODES = 32
+_CLOSURE_AZIMUTH_SAMPLES = 72
+
+
+def _art_brf(theta_i, theta_v, phi, absorption):
+    """Evaluate the ART BRF for a given absorption exponent.
+
+    ``absorption`` is the square root of the Snowoptics ``alpha``, the same
+    term that sets the plane albedo exp(-absorption u(mu)).
+    """
+
+    cos_i = np.cos(theta_i)
+    cos_v = np.cos(theta_v)
+    # Scattering angle with phi = 0 on the forward-scattering side.
+    theta = np.degrees(np.arccos(np.clip(
+        -cos_i * cos_v + np.sin(theta_i) * np.sin(theta_v) * np.cos(phi),
+        -1.0,
+        1.0,
+    )))
+    phase = 11.1 * np.exp(-0.087 * theta) + 1.1 * np.exp(-0.014 * theta)
+    r0 = (
+        1.247 + 1.186 * (cos_i + cos_v) + 5.157 * cos_i * cos_v + phase
+    ) / (4.0 * (cos_i + cos_v))
+    u_i = 3.0 / 7.0 * (1.0 + 2.0 * cos_i)
+    u_v = 3.0 / 7.0 * (1.0 + 2.0 * cos_v)
+    return r0 * np.exp(-absorption * u_i * u_v / r0)
+
+
+def _brf_closure_factors(absorption):
+    """Return reciprocal factors that close the BRF on the albedo.
+
+    The factors f solve f(mu_i) * (1/pi) * integral of f(mu_v) R mu_v
+    over the view hemisphere = exp(-absorption u(mu_i)) on Gauss-Legendre
+    nodes in mu. Scaling R by f(mu_i) f(mu_v) keeps it reciprocal.
+    """
+
+    nodes, weights = np.polynomial.legendre.leggauss(_CLOSURE_ZENITH_NODES)
+    mu = 0.5 * (nodes + 1.0)
+    weights = 0.5 * weights
+    zenith = np.arccos(mu)
+    azimuth = (
+        (np.arange(_CLOSURE_AZIMUTH_SAMPLES) + 0.5)
+        * 2.0 * np.pi / _CLOSURE_AZIMUTH_SAMPLES
+    )
+    brf = _art_brf(
+        zenith[:, np.newaxis, np.newaxis],
+        zenith[np.newaxis, :, np.newaxis],
+        azimuth[np.newaxis, np.newaxis, :],
+        absorption,
+    )
+    # (1/pi) times the azimuth integral is twice the azimuthal mean.
+    kernel = 2.0 * brf.mean(axis=2) * (mu * weights)[np.newaxis, :]
+    albedo = np.exp(-absorption * 3.0 / 7.0 * (1.0 + 2.0 * mu))
+
+    factors = np.ones_like(mu)
+    for _ in range(500):
+        updated = np.sqrt(factors * albedo / (kernel @ factors))
+        converged = np.max(np.abs(updated - factors)) < 1e-12
+        factors = updated
+        if converged:
+            break
+    return mu, factors
+
+
 def brf_kokhanovsky(
     theta_i,
     theta_v,
     phi,
     wvl,
     SSA,
-    b=13,
-    M=0,
     impurities=None,
     B=1.6,
     g=0.845,
+    close_on_albedo=True,
 ):
     """Calculate snow BRF.
 
     Snow BRF function from Kokhanovsky et al. Described in DOI:
     10.1109/LgrS.2012.2185775. Calculate BRF value for given illumination /
-    viewing angles, wavelengths and SSA.
+    viewing angles, wavelength and SSA.
+
+    The absorption term is the Snowoptics ``alpha`` used by
+    :func:`directional_albedo_kokhanovsky`, so the BRF and the albedos
+    share B, g, the ice refractive index and any impurities. With
+    ``close_on_albedo`` the BRF is further scaled by reciprocal factors
+    f(theta_i) f(theta_v) so that its integral over the view hemisphere
+    equals that directional albedo. Without it, the asymptotic BRF
+    reflects up to about twice the albedo in strongly absorbing bands such
+    as B11 and B12.
 
     :param theta_i: illumination zenith angle
     :type theta_i: float
@@ -207,44 +280,40 @@ def brf_kokhanovsky(
     :param phi: ART relative azimuth angle: zero on the forward-scattering
         side and pi in exact backscatter
     :type phi: float
-    :param wvl: wavelength (m)
-    :type wvl: ndarray
+    :param wvl: wavelength (nm), a scalar
+    :type wvl: float
     :param SSA: Specific surface area of snow
     :type SSA: float
-    :param b: 13, as L = 13d in kokhanovsky's paper
-    :type b: float, optional
-    :param M: proportional to the mass concentration of pollutants in snow
-    :type M: float, optional
     :param impurities: Snowoptics LAP concentrations in kg/kg
     :type impurities: dict, optional
+    :param B: Snow absorption enhancement parameter
+    :type B: float, optional
+    :param g: Snow asymmetry factor
+    :type g: float, optional
+    :param close_on_albedo: scale the BRF to integrate to the albedo
+    :type close_on_albedo: bool, optional
     :return: BRF
     :rtype: ndarray
     """
-    wvl_m = wvl * 1e-9
 
-    def brf0(theta_i, theta_v, phi):
-        """Calculate the r0 of the BRF.
-
-        See brf function for details.
-
-        :param theta_i: illumination zenith angle
-        :type theta_i: float
-        :param theta_v: viewing zenith angle
-        :type theta_v: float
-        :param phi: ART relative azimuth angle: zero on the
-            forward-scattering side and pi in exact backscatter
-        :type phi: float
-        :return: r0
-        :rtype: float
-        """
-        theta = np.arccos(-np.cos(theta_i) * np.cos(theta_v) + np.sin(theta_i)
-                          * np.sin(theta_v) * np.cos(phi)) * 180. / np.pi
-        phase = 11.1 * np.exp(-0.087 * theta) + 1.1 * np.exp(-0.014 * theta)
-        rr = 1.247 + 1.186 * (np.cos(theta_i) + np.cos(theta_v)) + 5.157 * (
-            np.cos(theta_i) * np.cos(theta_v)) + phase
-        rr = rr / (4 * (np.cos(theta_i) + np.cos(theta_v)))
-
+    if np.ndim(wvl) != 0:
+        raise ValueError("brf_kokhanovsky expects one wavelength")
+    absorption = float(np.sqrt(so.compute_alpha(
+        float(wvl) * 1e-9,
+        SSA,
+        impurities=impurities,
+        ni="w2008",
+        B=B,
+        g=g,
+    )))
+    rr = _art_brf(theta_i, theta_v, phi, absorption)
+    if not close_on_albedo:
         return rr
+
+    mu, factors = _brf_closure_factors(absorption)
+    factor_i = np.interp(np.cos(theta_i), mu, factors)
+    factor_v = np.interp(np.cos(theta_v), mu, factors)
+    return rr * factor_i * factor_v
 
     # r0 in kokhanovsky's paper
     r = brf0(theta_i, theta_v, phi)
