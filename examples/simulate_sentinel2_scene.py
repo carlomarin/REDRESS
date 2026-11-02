@@ -37,6 +37,11 @@ L1C_SAFE_FOLDER = Path("/path/to/S2B_MSIL1C_YYYYMMDD...SAFE")
 MTD_TL_FILE = Path("/path/to/S2B_MSIL1C_...SAFE/GRANULE/.../MTD_TL.xml")
 OUTPUT_DIRECTORY = Path("outputs/sentinel2_central_pixel")
 
+# Small edge gaps introduced by reprojection can be completed from the nearest
+# valid elevation. The run stops if any missing cell is farther than this from
+# measured terrain.
+MAXIMUM_DEM_FILL_DISTANCE_M = 200.0
+
 PLATFORM = "S2B"
 BANDS = ("B02", "B03", "B04", "B05", "B06", "B07", "B8A", "B11", "B12")
 
@@ -61,7 +66,17 @@ ATMOSPHERE_WINDOW_WIDTH_M = 2100.0
 def main() -> None:
     """Read the physical inputs and simulate the DEM central pixel."""
 
-    dem = read_dem(DEM_FILE)
+    dem = read_dem(
+        DEM_FILE,
+        fill_missing=True,
+        maximum_fill_distance_m=MAXIMUM_DEM_FILL_DISTANCE_M,
+    )
+    if dem.meta["filled_missing_cells"]:
+        print(
+            f"Filled {dem.meta['filled_missing_cells']} DEM cells from the "
+            "nearest valid elevation; maximum distance "
+            f"{dem.meta['maximum_fill_distance_m']:.1f} m"
+        )
     validate_central_pixel_context(
         dem,
         maximum_window_width_m=max(

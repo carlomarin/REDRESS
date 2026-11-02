@@ -268,8 +268,69 @@ def _raster_coordinates(geotransform, shape):
     return x, y
 
 
-def read_dem(path: str | Path) -> Dem:
-    """Read a projected, north-up, square-pixel DEM without resampling it."""
+def fill_missing_dem_cells(
+    altitude: np.ndarray,
+    pixel_size_m: float,
+    maximum_fill_distance_m: float,
+) -> tuple[np.ndarray, int, float]:
+    """Fill small DEM gaps from the nearest finite elevation.
+
+    Nearest-neighbour filling preserves the local elevation range and avoids
+    the artificial cliffs produced by replacing NoData with zero. The maximum
+    distance prevents the procedure from inventing terrain across a large
+    internal void or outside a strongly irregular DEM footprint.
+    """
+
+    from scipy.ndimage import distance_transform_edt
+
+    values = np.asarray(altitude, dtype=np.float64)
+    missing = ~np.isfinite(values)
+    missing_count = int(np.count_nonzero(missing))
+    if missing_count == 0:
+        return values.copy(), 0, 0.0
+    if missing_count == values.size:
+        raise ValueError("the DEM contains no finite elevation cells")
+    if (
+        not np.isfinite(maximum_fill_distance_m)
+        or maximum_fill_distance_m <= 0.0
+    ):
+        raise ValueError(
+            "maximum_fill_distance_m must be positive and finite"
+        )
+
+    distance_m, nearest = distance_transform_edt(
+        missing,
+        sampling=float(pixel_size_m),
+        return_distances=True,
+        return_indices=True,
+    )
+    maximum_distance = float(np.max(distance_m[missing]))
+    if maximum_distance > maximum_fill_distance_m:
+        raise ValueError(
+            f"the DEM contains {missing_count} missing cells and the largest "
+            f"gap is {maximum_distance:.1f} m from valid terrain; this "
+            f"exceeds maximum_fill_distance_m={maximum_fill_distance_m:g}. "
+            "Use a DEM with a complete rectangular terrain buffer or raise "
+            "the limit only after inspecting the NoData pattern."
+        )
+
+    filled = values.copy()
+    filled[missing] = values[nearest[0, missing], nearest[1, missing]]
+    return filled, missing_count, maximum_distance
+
+
+def read_dem(
+    path: str | Path,
+    *,
+    fill_missing: bool = True,
+    maximum_fill_distance_m: float = 200.0,
+) -> Dem:
+    """Read a projected, north-up, square-pixel DEM without resampling it.
+
+    Small NoData gaps are filled from the nearest valid elevation by default.
+    The number of filled cells and maximum fill distance are recorded in the
+    DEM metadata for reporting and reproducibility.
+    """
 
     from osgeo import gdal, osr
 
@@ -302,16 +363,27 @@ def read_dem(path: str | Path) -> Dem:
     nodata = band.GetNoDataValue()
     if nodata is not None:
         altitude[np.isclose(altitude, nodata, equal_nan=True)] = np.nan
-    if not np.all(np.isfinite(altitude)):
-        missing = int(np.count_nonzero(~np.isfinite(altitude)))
+    missing_count = int(np.count_nonzero(~np.isfinite(altitude)))
+    maximum_fill_distance = 0.0
+    if missing_count and fill_missing:
+        altitude, missing_count, maximum_fill_distance = (
+            fill_missing_dem_cells(
+                altitude,
+                pixel_size_m=abs(float(geotransform[1])),
+                maximum_fill_distance_m=maximum_fill_distance_m,
+            )
+        )
+    elif missing_count:
         raise ValueError(
-            f"the DEM contains {missing} missing cells; fill the buffered "
-            "DEM before calculating horizons"
+            f"the DEM contains {missing_count} missing cells and "
+            "fill_missing=False"
         )
 
     x, y = _raster_coordinates(geotransform, altitude.shape)
     dem = Dem()
     dem.meta["path"] = str(path)
+    dem.meta["filled_missing_cells"] = missing_count
+    dem.meta["maximum_fill_distance_m"] = maximum_fill_distance
     dem.bands["altitude"] = xr.DataArray(
         altitude,
         dims=("x", "y"),

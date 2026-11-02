@@ -2,9 +2,44 @@
 # -*- coding: utf-8 -*-
 """Tests for the georeferenced Sentinel-2 scene workflow."""
 
+import numpy as np
 import pytest
 
-from redress.simulation.sentinel2_scene import read_mtd_tl_geometry
+from redress.simulation.sentinel2_scene import (
+    fill_missing_dem_cells,
+    read_mtd_tl_geometry,
+)
+
+
+def test_small_dem_gaps_are_filled_from_nearest_valid_elevation():
+    altitude = np.asarray([
+        [100.0, 100.0, 100.0],
+        [100.0, np.nan, 200.0],
+        [200.0, 200.0, 200.0],
+    ])
+
+    filled, count, distance = fill_missing_dem_cells(
+        altitude,
+        pixel_size_m=20.0,
+        maximum_fill_distance_m=20.0,
+    )
+
+    assert count == 1
+    assert distance == pytest.approx(20.0)
+    assert np.isfinite(filled).all()
+    assert filled[1, 1] in (100.0, 200.0)
+
+
+def test_large_dem_gap_is_rejected():
+    altitude = np.ones((7, 7), dtype=float)
+    altitude[1:-1, 1:-1] = np.nan
+
+    with pytest.raises(ValueError, match="largest gap"):
+        fill_missing_dem_cells(
+            altitude,
+            pixel_size_m=20.0,
+            maximum_fill_distance_m=20.0,
+        )
 
 
 def test_mtd_tl_mean_geometry_uses_requested_viewing_bands(tmp_path):
