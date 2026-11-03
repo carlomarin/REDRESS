@@ -228,12 +228,56 @@ def test_brf_closes_on_the_tartes_albedo():
     )
 
 
-def test_tartes_albedo_rejects_impurities_and_unknown_models():
-    with pytest.raises(NotImplementedError):
-        albedo_kokhanovsky(
-            500.0, 0.5, 0.25, 20.0,
-            impurities=lap_impurities(black_carbon_ng_g=50.0),
-            albedo_model="tartes",
+def test_tartes_impurities_match_snowoptics_absorption():
+    import snowoptics as so
+
+    from redress.optics.snow import _SnowopticsImpurity
+
+    wavelength = 500e-9
+    ssa = 40.0
+    impurities = lap_impurities(black_carbon_ng_g=50.0, dust_ug_g=100.0)
+    clean, _ = so.compute_single_scattering_properties(
+        wavelength, ssa, ni="w2008"
+    )
+    dirty, _ = so.compute_single_scattering_properties(
+        wavelength, ssa, impurities=impurities, ni="w2008"
+    )
+    tartes_increment = 0.0
+    for species, value in impurities.items():
+        concentration, density = (
+            value if isinstance(value, tuple) else (value, 1270.0)
         )
+        tartes_increment += 2.0 / ssa * concentration * _SnowopticsImpurity(
+            species, density
+        ).MAE(wavelength)
+    np.testing.assert_allclose(tartes_increment, dirty - clean, rtol=1e-10)
+
+
+def test_tartes_dust_darkens_the_visible_more_than_the_swir():
+    dust = lap_impurities(dust_ug_g=200.0)
+    darkening = {}
+    for wavelength in (490.0, 865.0, 1610.0):
+        clean = directional_albedo_kokhanovsky(
+            wavelength, 0.6, 40.0, albedo_model="tartes"
+        )
+        dirty = directional_albedo_kokhanovsky(
+            wavelength, 0.6, 40.0, impurities=dust, albedo_model="tartes"
+        )
+        darkening[wavelength] = float(1.0 - dirty / clean)
+    assert darkening[490.0] > darkening[865.0] > darkening[1610.0] >= 0.0
+    assert darkening[490.0] > 0.01
+
+    # The BRF still closes on the dusty TARTES albedo.
+    incidence = np.radians(50.0)
+    albedo = directional_albedo_kokhanovsky(
+        490.0, incidence, 40.0, impurities=dust, albedo_model="tartes"
+    )
+    closed = _hemispheric_brf_integral(
+        incidence, 490.0, 40.0, impurities=dust, albedo_model="tartes"
+    )
+    assert closed == pytest.approx(float(albedo), rel=2e-3)
+
+
+def test_unknown_albedo_model_is_rejected():
     with pytest.raises(ValueError, match="albedo_model"):
         directional_albedo_kokhanovsky(500.0, 0.5, 20.0, albedo_model="x")

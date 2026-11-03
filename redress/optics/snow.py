@@ -83,24 +83,66 @@ def lap_impurities(
     return impurities
 
 
-def _validate_albedo_model(albedo_model, impurities):
+def _validate_albedo_model(albedo_model):
     if albedo_model not in SNOW_ALBEDO_MODELS:
         raise ValueError(
             "albedo_model must be one of: " + ", ".join(SNOW_ALBEDO_MODELS)
         )
-    if albedo_model == "tartes" and impurities:
-        raise NotImplementedError(
-            "TARTES snow albedo is only available for clean snow"
+
+
+class _SnowopticsImpurity:
+    """TARTES impurity type with the Snowoptics mass absorption.
+
+    TARTES and Snowoptics add the same impurity co-albedo,
+    2 / SSA * concentration * MAE, so this gives the TARTES albedo the
+    same LAP optics as the ART albedo and BRF.
+    """
+
+    def __init__(self, species, density_kg_m3):
+        if species in ("BC", "soot"):
+            self._imaginary = so.refractive_index.refsoot_imag
+        elif species == "dust":
+            self._imaginary = so.refractive_index.refdust_imag
+        elif species == "dust_skiles":
+            self._imaginary = (
+                lambda wavelength: so.refractive_index.refdust_imag(
+                    wavelength, formulation="skiles2014"
+                )
+            )
+        else:
+            raise ValueError(f"unsupported impurity species: {species}")
+        self.density = density_kg_m3
+
+    def MAE(self, wavelength_m):
+        return (
+            6.0 * np.pi / wavelength_m / self.density
+            * np.abs(self._imaginary(wavelength_m))
         )
 
 
+def _impurity_key(impurities):
+    """Hashable (species, concentration, density) tuple for caching."""
+
+    key = []
+    for species, value in sorted((impurities or {}).items()):
+        try:
+            concentration, density = value
+        except TypeError:
+            # Snowoptics' default black-carbon density.
+            concentration, density = value, 1270.0
+        key.append((species, float(concentration), float(density)))
+    return tuple(key)
+
+
 def _tartes_albedo(wavelength_nm, ssa, zenith_degree, B, g,
-                   shape_parameterization=None, refractive_index=None):
+                   shape_parameterization=None, refractive_index=None,
+                   impurity_key=()):
     """Semi-infinite TARTES albedo; ``zenith_degree=None`` is diffuse.
 
     By default B and g are held constant and the ice refractive index is
     the one used by the ART albedo, so the two models differ only in their
     radiative transfer. See ``TARTES_SHAPE_PARAMETERIZATION``.
+    ``impurity_key`` comes from ``_impurity_key``.
     """
 
     import tartes
@@ -114,6 +156,13 @@ def _tartes_albedo(wavelength_nm, ssa, zenith_degree, B, g,
         "g0": g,
         "refrac_index": refractive_index or TARTES_REFRACTIVE_INDEX,
     }
+    if impurity_key:
+        # One snow layer: a list over layers of per-species concentrations.
+        options["impurities"] = [[item[1] for item in impurity_key]]
+        options["impurities_type"] = [
+            _SnowopticsImpurity(species, density)
+            for species, _, density in impurity_key
+        ]
     if zenith_degree is None:
         return float(tartes.albedo(
             wavelength_nm * 1e-9, ssa, dir_frac=0.0, **options
@@ -126,7 +175,8 @@ def _tartes_albedo(wavelength_nm, ssa, zenith_degree, B, g,
 
 @lru_cache(maxsize=4096)
 def _tartes_directional_table(wavelength_nm, ssa, B, g,
-                              shape_parameterization, refractive_index):
+                              shape_parameterization, refractive_index,
+                              impurity_key):
     """TARTES directional albedo on the closure nodes plus mu = 0 and 1."""
 
     mu, _ = _closure_nodes()
@@ -134,17 +184,19 @@ def _tartes_directional_table(wavelength_nm, ssa, B, g,
     albedo = np.array([
         _tartes_albedo(
             wavelength_nm, ssa, float(np.degrees(np.arccos(value))), B, g,
-            shape_parameterization, refractive_index,
+            shape_parameterization, refractive_index, impurity_key,
         )
         for value in mu
     ])
     return mu, albedo
 
 
-def _directional_albedo_tartes(wavelength_nm, zenith, ssa, B, g):
+def _directional_albedo_tartes(wavelength_nm, zenith, ssa, B, g,
+                               impurities=None):
     mu, albedo = _tartes_directional_table(
         float(wavelength_nm), float(ssa), float(B), float(g),
         TARTES_SHAPE_PARAMETERIZATION, TARTES_REFRACTIVE_INDEX,
+        _impurity_key(impurities),
     )
     return np.interp(np.cos(zenith), mu, albedo)
 
@@ -194,10 +246,13 @@ def albedo_kokhanovsky(
     if np.any((sza < 0) | (sza > np.pi / 2)):
         raise ValueError("solar zenith angles must be in [0, pi/2] radians")
 
-    _validate_albedo_model(albedo_model, impurities)
+    _validate_albedo_model(albedo_model)
     # White-sky albedo does not depend on solar zenith angle.
     if albedo_model == "tartes":
-        alb_diff_flat_val = _tartes_albedo(float(wls), ssa, None, B, g)
+        alb_diff_flat_val = _tartes_albedo(
+            float(wls), ssa, None, B, g,
+            impurity_key=_impurity_key(impurities),
+        )
     else:
         alb_diff_flat_val = so.albedo_diffuse_KZ04(
             wls_m,
@@ -251,13 +306,15 @@ def directional_albedo_kokhanovsky(
     values at one wavelength.
     """
 
-    _validate_albedo_model(albedo_model, impurities)
+    _validate_albedo_model(albedo_model)
     wavelength_m = wls * 1e-9
     zenith = np.asarray(zenith, dtype=np.float64)
     if np.any((zenith < 0) | (zenith > np.pi / 2)):
         raise ValueError("zenith angles must be in [0, pi/2] radians")
     if albedo_model == "tartes":
-        return _directional_albedo_tartes(wls, zenith, ssa, B, g)
+        return _directional_albedo_tartes(
+            wls, zenith, ssa, B, g, impurities
+        )
 
     # Snowoptics 0.99.2 implements this expression directly but validates the
     # cosine with a scalar assertion. Reproduce the same ART equation here so
@@ -400,7 +457,7 @@ def brf_kokhanovsky(
 
     if np.ndim(wvl) != 0:
         raise ValueError("brf_kokhanovsky expects one wavelength")
-    _validate_albedo_model(albedo_model, impurities)
+    _validate_albedo_model(albedo_model)
     if albedo_model == "tartes" and not close_on_albedo:
         raise ValueError("the TARTES albedo requires close_on_albedo=True")
     absorption = float(np.sqrt(so.compute_alpha(
@@ -417,7 +474,9 @@ def brf_kokhanovsky(
 
     mu, _ = _closure_nodes()
     if albedo_model == "tartes":
-        albedo = _directional_albedo_tartes(wvl, np.arccos(mu), SSA, B, g)
+        albedo = _directional_albedo_tartes(
+            wvl, np.arccos(mu), SSA, B, g, impurities
+        )
     else:
         albedo = np.exp(-absorption * 3.0 / 7.0 * (1.0 + 2.0 * mu))
     factors = _brf_closure_factors(absorption, albedo)

@@ -6,9 +6,10 @@ The source DEM, typically much finer than 20 m, is averaged onto the
 Sentinel-2 20 m tile grid so each simulated pixel matches one observed pixel.
 REDRESS runs over the whole DEM, and only pixels at least
 ``CONTEXT_MARGIN_M`` from its edges are kept. The script writes multiband
-GeoTIFFs on the same grid, simulated and observed L1C TOA reflectance, and
-prints a per-band comparison. With a fractional snow cover reference, the
-statistics use only pure-snow pixels, since REDRESS models snow everywhere.
+GeoTIFFs on the same grid, simulated and observed L1C TOA reflectance,
+prints a per-band comparison and draws it with ``plot_sentinel2_window.py``.
+With a fractional snow cover reference, the statistics use only pure-snow
+pixels, since REDRESS models snow everywhere.
 
 Run, for example:
 
@@ -26,7 +27,8 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from redress.optics.snow import SNOW_ALBEDO_MODELS
+from plot_sentinel2_window import plot_window_check
+from redress.optics.snow import DUST_MODELS, SNOW_ALBEDO_MODELS
 from redress.simulation.sentinel2_scene import (
     SnowSurface,
     crop_scene,
@@ -115,6 +117,15 @@ def parse_arguments() -> argparse.Namespace:
         "cases (default %(default)s)",
     )
     parser.add_argument(
+        "--dust", type=float, default=SNOW.dust_ug_g,
+        help="mineral dust in the snow in microgram g-1 (default %(default)g)",
+    )
+    parser.add_argument(
+        "--dust-model", choices=DUST_MODELS, default=SNOW.dust_model,
+        help="dust refractive index; muller2011 absorbs more than "
+        "skiles2014 (default %(default)s)",
+    )
+    parser.add_argument(
         "--output-directory", type=Path, required=True,
         help="folder for the aligned DEM, GeoTIFFs and comparison table",
     )
@@ -173,7 +184,8 @@ def main() -> None:
     print(
         f"Snow SSA: {arguments.ssa:g} m2 kg-1 "
         f"(optical diameter {6.0e3 / (917.0 * arguments.ssa):.2f} mm), "
-        f"{arguments.snow_albedo.upper()} albedo"
+        f"{arguments.snow_albedo.upper()} albedo; "
+        f"dust {arguments.dust:g} µg g-1 ({arguments.dust_model})"
     )
     print(
         "Geometry: "
@@ -191,6 +203,8 @@ def main() -> None:
             SNOW,
             specific_surface_area_m2_kg=arguments.ssa,
             albedo_model=arguments.snow_albedo,
+            dust_ug_g=arguments.dust,
+            dust_model=arguments.dust_model,
         ),
         platform=PLATFORM,
         band_names=BANDS,
@@ -260,6 +274,16 @@ def main() -> None:
     print(f"\nSimulated GeoTIFF: {simulated_tif}")
     print(f"Observed GeoTIFF:  {observed_tif}")
     print(f"Comparison table:  {table_csv}")
+    figure_png = plot_window_check(
+        output_directory,
+        pure_snow_min_fraction=PURE_SNOW_MIN_FRACTION,
+        title=(
+            f"SSA {arguments.ssa:g} m2 kg-1, "
+            f"{arguments.snow_albedo.upper()} albedo, "
+            f"dust {arguments.dust:g} µg g-1 ({arguments.dust_model})"
+        ),
+    )
+    print(f"Comparison figure: {figure_png}")
 
 
 if __name__ == "__main__":
