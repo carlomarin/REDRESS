@@ -121,6 +121,10 @@ def parse_arguments() -> argparse.Namespace:
         help="mineral dust in the snow in microgram g-1 (default %(default)g)",
     )
     parser.add_argument(
+        "--black-carbon", type=float, default=SNOW.black_carbon_ng_g,
+        help="black carbon in the snow in ng g-1 (default %(default)g)",
+    )
+    parser.add_argument(
         "--dust-model", choices=DUST_MODELS, default=SNOW.dust_model,
         help="dust refractive index; muller2011 absorbs more than "
         "skiles2014 (default %(default)s)",
@@ -185,7 +189,8 @@ def main() -> None:
         f"Snow SSA: {arguments.ssa:g} m2 kg-1 "
         f"(optical diameter {6.0e3 / (917.0 * arguments.ssa):.2f} mm), "
         f"{arguments.snow_albedo.upper()} albedo; "
-        f"dust {arguments.dust:g} µg g-1 ({arguments.dust_model})"
+        f"dust {arguments.dust:g} µg g-1 ({arguments.dust_model}), "
+        f"black carbon {arguments.black_carbon:g} ng g-1"
     )
     print(
         "Solar geometry: "
@@ -210,6 +215,7 @@ def main() -> None:
             SNOW,
             specific_surface_area_m2_kg=arguments.ssa,
             albedo_model=arguments.snow_albedo,
+            black_carbon_ng_g=arguments.black_carbon,
             dust_ug_g=arguments.dust,
             dust_model=arguments.dust_model,
         ),
@@ -287,7 +293,8 @@ def main() -> None:
         title=(
             f"SSA {arguments.ssa:g} m2 kg-1, "
             f"{arguments.snow_albedo.upper()} albedo, "
-            f"dust {arguments.dust:g} µg g-1 ({arguments.dust_model})"
+            f"dust {arguments.dust:g} µg g-1 ({arguments.dust_model}), "
+            f"BC {arguments.black_carbon:g} ng g-1"
         ),
     )
     print(f"Comparison figure: {figure_png}")
