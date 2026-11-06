@@ -537,6 +537,31 @@ def test_ray_march_horizon_matches_the_v_valley_geometry():
     assert elevation[1, row, 100] == approx(45.0, abs=1e-6)
 
 
+def test_ray_march_horizon_cannot_skip_a_distant_one_cell_ridge():
+    from redress.topography.horizon import ray_march_horizon
+
+    resolution = 20.0
+    ridge_column = 300
+    ridge_height = 400.0
+    altitude = np.zeros((3, 401), dtype=np.float64)
+    altitude[:, ridge_column] = ridge_height
+
+    elevation, distance = ray_march_horizon(
+        altitude,
+        resolution,
+        np.asarray([np.pi / 2.0]),
+    )
+
+    expected_elevation = np.degrees(np.arctan(
+        ridge_height / (ridge_column * resolution)
+    ))
+    assert elevation[0, 1, 0] == approx(expected_elevation, abs=1e-10)
+    assert distance[0, 1, 0] == approx(
+        ridge_column * resolution,
+        abs=1e-10,
+    )
+
+
 def test_dem_horizon_defaults_to_ray_marching():
     terrain = symmetric_v_valley(41, 20.0, 45.0, wall_extent_m=300.0)
     dem = Dem()

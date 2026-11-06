@@ -278,63 +278,162 @@ def dozier_horizon(dem_array, dem_pixel_size, phi):
     return Eh, Dh
 
 
-
-@njit(cache=True)
-def _bilinear(altitude, row, column):
-    """Bilinear elevation at a fractional row and column inside the grid."""
-
-    rows, columns = altitude.shape
-    row0 = min(int(row), rows - 2)
-    column0 = min(int(column), columns - 2)
-    row_weight = row - row0
-    column_weight = column - column0
-    top = (
-        (1.0 - column_weight) * altitude[row0, column0]
-        + column_weight * altitude[row0, column0 + 1]
-    )
-    bottom = (
-        (1.0 - column_weight) * altitude[row0 + 1, column0]
-        + column_weight * altitude[row0 + 1, column0 + 1]
-    )
-    return (1.0 - row_weight) * top + row_weight * bottom
-
-
 @njit(parallel=True, cache=True)
 def _ray_march_horizons(
-    altitude, pixel_size, azimuths, minimum_step, step_growth,
+    altitude,
+    pixel_size,
+    azimuths,
+    minimum_distance,
 ):
+    """Trace every crossed grid cell and maximize its bilinear surface."""
+
     directions = azimuths.size
     rows, columns = altitude.shape
     elevation = np.zeros((directions, rows, columns))
     distance = np.zeros((directions, rows, columns))
+    epsilon = 1.0e-12
+    infinity = np.inf
+
     for task in prange(directions * rows):
         direction = task // rows
         row = task % rows
         # Rows increase southward and columns eastward.
         row_step = -cos(azimuths[direction])
         column_step = sin(azimuths[direction])
+
         for column in range(columns):
             origin = altitude[row, column]
             best_tangent = 0.0
             best_distance = 0.0
-            travelled = minimum_step
             last_inside = 0.0
-            while True:
-                sample_row = row + row_step * travelled
-                sample_column = column + column_step * travelled
-                if (
-                    sample_row < 0.0 or sample_row > rows - 1
-                    or sample_column < 0.0 or sample_column > columns - 1
-                ):
+
+            # Select the first bilinear cell entered by the ray. A ray lying
+            # on a grid line may use either adjacent cell because the surface
+            # is continuous on the shared boundary.
+            if row_step > epsilon:
+                cell_row = row
+            elif row_step < -epsilon:
+                cell_row = row - 1
+            else:
+                cell_row = min(row, rows - 2)
+
+            if column_step > epsilon:
+                cell_column = column
+            elif column_step < -epsilon:
+                cell_column = column - 1
+            else:
+                cell_column = min(column, columns - 2)
+
+            travelled = 0.0
+            while (
+                0 <= cell_row < rows - 1
+                and 0 <= cell_column < columns - 1
+            ):
+                if row_step > epsilon:
+                    row_crossing = (
+                        cell_row + 1.0 - row
+                    ) / row_step
+                elif row_step < -epsilon:
+                    row_crossing = (cell_row - row) / row_step
+                else:
+                    row_crossing = infinity
+
+                if column_step > epsilon:
+                    column_crossing = (
+                        cell_column + 1.0 - column
+                    ) / column_step
+                elif column_step < -epsilon:
+                    column_crossing = (
+                        cell_column - column
+                    ) / column_step
+                else:
+                    column_crossing = infinity
+
+                next_crossing = min(row_crossing, column_crossing)
+                if next_crossing <= travelled + epsilon:
                     break
-                last_inside = travelled
-                tangent = (
-                    _bilinear(altitude, sample_row, sample_column) - origin
-                ) / (travelled * pixel_size)
-                if tangent > best_tangent:
-                    best_tangent = tangent
-                    best_distance = travelled
-                travelled += max(minimum_step, step_growth * travelled)
+
+                # Along the ray, a bilinear cell is a quadratic function
+                # z(t) = q2*t^2 + q1*t + q0. The horizon tangent is
+                # (z(t) - z_origin) / (t * pixel_size), whose only possible
+                # interior stationary point is available analytically.
+                z00 = altitude[cell_row, cell_column]
+                z01 = altitude[cell_row, cell_column + 1]
+                z10 = altitude[cell_row + 1, cell_column]
+                z11 = altitude[cell_row + 1, cell_column + 1]
+                row_offset = row - cell_row
+                column_offset = column - cell_column
+                cross = z11 - z10 - z01 + z00
+                q2 = cross * row_step * column_step
+                q1 = (
+                    (z10 - z00) * row_step
+                    + (z01 - z00) * column_step
+                    + cross * (
+                        row_offset * column_step
+                        + column_offset * row_step
+                    )
+                )
+                q0 = (
+                    z00
+                    + (z10 - z00) * row_offset
+                    + (z01 - z00) * column_offset
+                    + cross * row_offset * column_offset
+                )
+
+                segment_start = max(travelled, minimum_distance)
+                if segment_start < next_crossing - epsilon:
+                    start_elevation = (
+                        (q2 * segment_start + q1) * segment_start + q0
+                    )
+                    tangent = (
+                        start_elevation - origin
+                    ) / (segment_start * pixel_size)
+                    if tangent > best_tangent:
+                        best_tangent = tangent
+                        best_distance = segment_start
+
+                    endpoint_elevation = (
+                        (q2 * next_crossing + q1) * next_crossing + q0
+                    )
+                    tangent = (
+                        endpoint_elevation - origin
+                    ) / (next_crossing * pixel_size)
+                    if tangent > best_tangent:
+                        best_tangent = tangent
+                        best_distance = next_crossing
+
+                    if abs(q2) > epsilon:
+                        critical_squared = (q0 - origin) / q2
+                        if critical_squared > 0.0:
+                            critical = sqrt(critical_squared)
+                            if (
+                                critical > segment_start + epsilon
+                                and critical < next_crossing - epsilon
+                            ):
+                                critical_elevation = (
+                                    (q2 * critical + q1) * critical + q0
+                                )
+                                tangent = (
+                                    critical_elevation - origin
+                                ) / (critical * pixel_size)
+                                if tangent > best_tangent:
+                                    best_tangent = tangent
+                                    best_distance = critical
+
+                travelled = next_crossing
+                last_inside = next_crossing
+                tolerance = epsilon * max(1.0, next_crossing)
+                if abs(row_crossing - next_crossing) <= tolerance:
+                    if row_step > epsilon:
+                        cell_row += 1
+                    elif row_step < -epsilon:
+                        cell_row -= 1
+                if abs(column_crossing - next_crossing) <= tolerance:
+                    if column_step > epsilon:
+                        cell_column += 1
+                    elif column_step < -epsilon:
+                        cell_column -= 1
+
             elevation[direction, row, column] = degrees(atan(best_tangent))
             # Without a rising horizon, report the distance to the DEM edge.
             if best_distance == 0.0:
@@ -347,18 +446,20 @@ def ray_march_horizon(
     dem_array,
     dem_pixel_size,
     azimuths,
-    minimum_step_pixels=0.5,
-    step_growth=0.01,
+    minimum_distance_pixels=0.5,
 ):
-    """Horizon elevation and distance by marching along exact azimuths.
+    """Horizon elevation and distance on a bilinearly interpolated DEM.
 
-    From every pixel, elevations are sampled by bilinear interpolation along
-    a straight line at each compass azimuth (radians, clockwise from north)
-    until the DEM edge. Unlike the Dozier profile algorithm, which groups
-    pixels into rounded profiles and can pair a pixel with a sideways
-    neighbour only metres ahead, every sample lies on the pixel's own line.
-    The step starts at ``minimum_step_pixels`` and grows by ``step_growth``
-    times the distance travelled.
+    From every pixel, a straight ray is followed at each compass azimuth
+    (radians, clockwise from north) until the DEM edge. Grid traversal visits
+    every bilinear cell crossed by the ray. Within each cell, the terrain
+    elevation is quadratic along the ray, so the maximum horizon tangent is
+    evaluated at the cell-segment boundaries and at its possible analytical
+    stationary point. The result is exact for the bilinearly interpolated
+    raster surface beyond ``minimum_distance_pixels``; it does not depend on
+    a distance step that could skip a narrow ridge. The default half-pixel
+    exclusion keeps the local surface derivative in the separate self-shadow
+    calculation.
 
     Returns horizon elevation in degrees, never below zero, and the
     horizontal distance to the horizon in metres, both shaped
@@ -372,15 +473,11 @@ def ray_march_horizon(
         raise ValueError("dem_array must not contain missing elevations")
     if not dem_pixel_size > 0.0:
         raise ValueError("dem_pixel_size must be positive")
-    if not minimum_step_pixels > 0.0 or step_growth < 0.0:
-        raise ValueError(
-            "minimum_step_pixels must be positive and step_growth "
-            "non-negative"
-        )
+    if not minimum_distance_pixels > 0.0:
+        raise ValueError("minimum_distance_pixels must be positive")
     return _ray_march_horizons(
         altitude,
         float(dem_pixel_size),
         np.ascontiguousarray(azimuths, dtype=np.float64),
-        float(minimum_step_pixels),
-        float(step_growth),
+        float(minimum_distance_pixels),
     )

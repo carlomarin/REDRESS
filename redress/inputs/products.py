@@ -100,12 +100,13 @@ class Dem(object):
         obtain a more accurate representation of shadows. Here N results in
         2N directions (N32 = 64 directions).
 
-        ``method="ray_march"`` samples the DEM by bilinear interpolation
-        along each exact azimuth. ``method="dozier"`` uses the profile
-        algorithm of Dozier et al. (1981), which rounds pixels onto
-        profiles; on steep oblique slopes it can pair a pixel with a
-        sideways neighbour a few metres ahead and report horizons tens of
-        degrees too high, seen as isolated false cast shadows.
+        ``method="ray_march"`` traverses every bilinear DEM cell intersected
+        by each exact azimuth and analytically maximizes the horizon tangent
+        within that cell. ``method="dozier"`` uses the profile algorithm of
+        Dozier et al. (1981), which rounds pixels onto profiles; on steep
+        oblique slopes it can pair a pixel with a sideways neighbour a few
+        metres ahead and report horizons tens of degrees too high, seen as
+        isolated false cast shadows.
 
         Args:
             dem (self): dem object
