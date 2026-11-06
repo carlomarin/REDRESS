@@ -11,6 +11,7 @@ import xarray as xr
 from redress.topography.forward_model import (
     Cases,
     _anisotropic_sky_factor,
+    _maximum_absolute_radiance_change,
     _window_mean,
     _solar_irradiance_density,
     build_atmospheric_altitude_lookup,
@@ -50,6 +51,23 @@ def test_anisotropic_sky_factor_respects_sky_view_in_shadow():
     )
     assert result[0] == pytest.approx(sky_view_factor[0])
     assert result[1] == pytest.approx(expected_illuminated)
+
+
+def test_radiance_convergence_cannot_cancel_between_pixels():
+    previous = np.zeros((7, 7), dtype=np.float64)
+    current = previous.copy()
+    current[3, 2] = 2.0e-3
+    current[3, 4] = -2.0e-3
+
+    # The former signed spatial mean is zero despite unconverged pixels.
+    assert np.mean(current[2:-2, 2:-2] - previous[2:-2, 2:-2]) == (
+        pytest.approx(0.0)
+    )
+    assert _maximum_absolute_radiance_change(
+        current,
+        previous,
+        edge_width=2,
+    ) == pytest.approx(2.0e-3)
 
 
 @pytest.mark.parametrize(

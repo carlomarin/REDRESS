@@ -91,6 +91,54 @@ def _window_mean(values, window_size, boundary="nearest"):
     )
 
 
+def _maximum_absolute_radiance_change(
+    current_radiance,
+    previous_radiance,
+    edge_width=2,
+):
+    """Return the largest finite radiance change between two iterations.
+
+    The convergence test excludes a boundary of edge_width pixels, where
+    moving-window estimates are most affected by the finite raster extent.
+    Taking the maximum absolute change prevents positive and negative pixel
+    changes from cancelling in a spatial mean.
+    """
+
+    current = np.asarray(current_radiance, dtype=np.float64)
+    previous = np.asarray(previous_radiance, dtype=np.float64)
+    if current.ndim != 2 or current.shape != previous.shape:
+        raise ValueError(
+            "current_radiance and previous_radiance must be equally shaped "
+            "two-dimensional arrays"
+        )
+    if (
+        isinstance(edge_width, bool)
+        or int(edge_width) != edge_width
+        or edge_width < 0
+    ):
+        raise ValueError("edge_width must be a non-negative integer")
+    edge_width = int(edge_width)
+    if edge_width:
+        if min(current.shape) <= 2 * edge_width:
+            raise ValueError(
+                "radiance arrays are too small for the requested edge_width"
+            )
+        current = current[
+            edge_width:-edge_width,
+            edge_width:-edge_width,
+        ]
+        previous = previous[
+            edge_width:-edge_width,
+            edge_width:-edge_width,
+        ]
+
+    absolute_change = np.abs(current - previous)
+    finite = np.isfinite(absolute_change)
+    if not np.any(finite):
+        raise ValueError("radiance convergence area contains no finite values")
+    return float(np.max(absolute_change[finite]))
+
+
 def _anisotropic_sky_factor(
     beam_visibility,
     direct_transmittance,
@@ -770,9 +818,13 @@ def iterative_radiance(
         # Update the radiance stack
         l_toa = np.dstack((l_toa, l_total))
 
-        # Update the convergence indicator (removing the edges)
-        l_difference = np.abs(
-            np.nanmean(l_toa[2:-2, 2:-2, i] - l_toa[2:-2, 2:-2, i - 1])
+        # Require every finite interior pixel to satisfy the radiance
+        # tolerance. A spatial mean would allow positive and negative changes
+        # to cancel and could declare convergence prematurely.
+        l_difference = _maximum_absolute_radiance_change(
+            l_toa[:, :, i],
+            l_toa[:, :, i - 1],
+            edge_width=2,
         )
         if verbose:
             print(
