@@ -57,6 +57,7 @@ LEGACY_AOD550 = None
 LEGACY_AEROSOL_MODEL = "Continental"
 
 HORIZON_HALF_DIRECTIONS = 32  # 64 azimuth directions.
+HORIZON_METHOD = "ray_march"  # Exact on the bilinearly interpolated DEM.
 TERRAIN_CONFIGURATION_METHOD = "hemispheric_closure"
 TERRAIN_REFLECTION_METHOD = "neighbour_exitance"
 TERRAIN_WINDOW_WIDTH_M = 1500.0
@@ -130,6 +131,7 @@ def main() -> None:
         band_names=BANDS,
         case_number=5,
         horizon_half_directions=HORIZON_HALF_DIRECTIONS,
+        horizon_method=HORIZON_METHOD,
         terrain_configuration_method=TERRAIN_CONFIGURATION_METHOD,
         terrain_reflection_method=TERRAIN_REFLECTION_METHOD,
         terrain_window_width_m=TERRAIN_WINDOW_WIDTH_M,

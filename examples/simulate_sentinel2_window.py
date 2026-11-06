@@ -72,6 +72,7 @@ LEGACY_AEROSOL_MODEL = "Continental"
 
 MAXIMUM_DEM_FILL_DISTANCE_M = 200.0
 HORIZON_HALF_DIRECTIONS = 32  # 64 azimuth directions.
+HORIZON_METHOD = "ray_march"  # Exact on the bilinearly interpolated DEM.
 TERRAIN_CONFIGURATION_METHOD = "hemispheric_closure"
 TERRAIN_REFLECTION_METHOD = "visible_exitance"
 TERRAIN_VISIBILITY_RADIUS_M = 3000.0
@@ -253,6 +254,7 @@ def main() -> None:
         band_names=BANDS,
         case_number=5,
         horizon_half_directions=HORIZON_HALF_DIRECTIONS,
+        horizon_method=HORIZON_METHOD,
         terrain_configuration_method=TERRAIN_CONFIGURATION_METHOD,
         terrain_reflection_method=TERRAIN_REFLECTION_METHOD,
         terrain_window_width_m=TERRAIN_WINDOW_WIDTH_M,

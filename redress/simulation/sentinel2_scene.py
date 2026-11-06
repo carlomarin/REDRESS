@@ -823,6 +823,7 @@ def simulate_sentinel2_scene(
     band_names: Sequence[str] = DEFAULT_BANDS,
     case_number: int = 5,
     horizon_half_directions: int = 32,
+    horizon_method: str = "ray_march",
     terrain_configuration_method: str = "hemispheric_closure",
     terrain_reflection_method: str = "neighbour_exitance",
     terrain_window_width_m: float = 1500.0,
@@ -836,6 +837,10 @@ def simulate_sentinel2_scene(
     Mean viewing zenith and azimuth are selected independently for each band
     when present in ``geometry.viewing_by_band``. The expensive solar and
     terrain products are shared; only view-dependent products are rebuilt.
+
+    ``horizon_method="ray_march"`` traverses every intersected bilinear DEM
+    cell and is the rigorous default. The legacy ``"dozier"`` method remains
+    available for controlled comparisons.
 
     ``neighbour_exitance`` is the practical default for image-sized rasters.
     ``visible_exitance`` is more geometrically explicit but currently traces
@@ -861,7 +866,10 @@ def simulate_sentinel2_scene(
     # expensive products once using the first band, then update only the
     # view-dependent terms for each band mean direction.
     dem.angles = _constant_angles(dem, geometry, selected_bands[0])
-    dem.compute_horizon(N=horizon_half_directions)
+    dem.compute_horizon(
+        N=horizon_half_directions,
+        method=horizon_method,
+    )
     dem.compute_topo_bands(
         terrain_configuration_method=terrain_configuration_method
     )
@@ -913,6 +921,8 @@ def simulate_sentinel2_scene(
     )
     output = _output_dataset(model, dem)
     output.attrs.update(
+        horizon_method=horizon_method,
+        horizon_directions=2 * horizon_half_directions,
         terrain_configuration_method=terrain_configuration_method,
         terrain_reflection_method=terrain_reflection_method,
         snow_specific_surface_area_m2_kg=snow.specific_surface_area_m2_kg,
