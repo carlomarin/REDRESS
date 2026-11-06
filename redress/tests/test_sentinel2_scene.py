@@ -9,7 +9,10 @@ import xarray as xr
 
 from redress.inputs.products import Dem
 from redress.simulation.sentinel2_scene import (
+    Sentinel2BandViewingGeometry,
+    Sentinel2Geometry,
     Sentinel2TileGrid,
+    _constant_angles,
     _jp2_precision,
     crop_scene,
     edge_independent_window,
@@ -55,7 +58,7 @@ def test_large_dem_gap_is_rejected():
         )
 
 
-def test_mtd_tl_mean_geometry_uses_requested_viewing_bands(tmp_path):
+def test_mtd_tl_geometry_retains_each_requested_viewing_band(tmp_path):
     metadata = tmp_path / "MTD_TL.xml"
     metadata.write_text(
         """<?xml version="1.0" encoding="UTF-8"?>
@@ -95,11 +98,40 @@ def test_mtd_tl_mean_geometry_uses_requested_viewing_bands(tmp_path):
     assert acquisition_time.day == 28
     assert geometry.solar_zenith_deg == pytest.approx(46.5)
     assert geometry.solar_azimuth_deg == pytest.approx(12.0)
+    assert geometry.viewing_by_band == {
+        "B02": Sentinel2BandViewingGeometry(4.0, 359.0),
+        "B03": Sentinel2BandViewingGeometry(4.0, 1.0),
+    }
+    assert geometry.viewing_for_band("B02") == pytest.approx((4.0, 359.0))
+    assert geometry.viewing_for_band("B03") == pytest.approx((4.0, 1.0))
+    # The cross-band vector mean remains available only as a summary.
     assert geometry.view_zenith_deg == pytest.approx(4.0, abs=1e-3)
     assert min(
         abs(geometry.view_azimuth_deg),
         abs(geometry.view_azimuth_deg - 360.0),
     ) < 1e-6
+
+
+def test_constant_angles_select_the_requested_band_viewing_direction():
+    dem = _grid_dem(3, 4)
+    geometry = Sentinel2Geometry(
+        solar_zenith_deg=45.0,
+        solar_azimuth_deg=180.0,
+        view_zenith_deg=0.0,
+        view_azimuth_deg=0.0,
+        viewing_by_band={
+            "B02": Sentinel2BandViewingGeometry(3.0, 95.0),
+            "B11": Sentinel2BandViewingGeometry(8.0, 105.0),
+        },
+    )
+
+    blue = _constant_angles(dem, geometry, "B02")
+    swir = _constant_angles(dem, geometry, "B11")
+
+    np.testing.assert_allclose(blue["VZA"], np.deg2rad(3.0))
+    np.testing.assert_allclose(blue["VAA"], np.deg2rad(95.0))
+    np.testing.assert_allclose(swir["VZA"], np.deg2rad(8.0))
+    np.testing.assert_allclose(swir["VAA"], np.deg2rad(105.0))
 
 
 def test_mtd_tl_geometry_reports_a_missing_requested_band(tmp_path):

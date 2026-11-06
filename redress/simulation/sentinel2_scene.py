@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 """Simulate a georeferenced Sentinel-2 snow scene with REDRESS.
 
-The functions in this module connect a projected DEM, a spatially uniform
-Sentinel-2 geometry, snow optical properties and a prescribed atmosphere to
-the REDRESS forward model. The output follows CF raster conventions and can
-be written either as NetCDF or as a multiband GeoTIFF.
+The functions in this module connect a projected DEM, Sentinel-2 solar and
+band-mean viewing geometry, snow optical properties and a prescribed
+atmosphere to the REDRESS forward model. The output follows CF raster
+conventions and can be written either as NetCDF or as a multiband GeoTIFF.
 
 The DEM should contain a terrain buffer around the area that will be analysed.
 Without that buffer, horizon and terrain-exchange calculations near the image
@@ -13,7 +13,7 @@ boundary omit terrain outside the raster.
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -23,6 +23,7 @@ import xarray as xr
 
 from redress.inputs.products import Dem, Model
 from redress.optics.snow import SNOW_ALBEDO_MODELS
+from redress.topography import dem_products
 from redress.inputs.sentinel2 import (
     SENTINEL2_BAND_NAMES,
     normalize_sentinel2_band_name,
@@ -40,13 +41,42 @@ DEFAULT_BANDS = (
 
 
 @dataclass(frozen=True)
+class Sentinel2BandViewingGeometry:
+    """Mean viewing direction of one Sentinel-2 band, in degrees."""
+
+    zenith_deg: float
+    azimuth_deg: float
+
+    def validate(self) -> None:
+        """Validate the viewing direction."""
+
+        if not np.isfinite(self.zenith_deg) or not np.isfinite(
+            self.azimuth_deg
+        ):
+            raise ValueError("viewing angles must be finite")
+        if not 0.0 <= self.zenith_deg < 90.0:
+            raise ValueError("viewing zenith must be in [0, 90) degrees")
+        if not 0.0 <= self.azimuth_deg < 360.0:
+            raise ValueError("viewing azimuth must be in [0, 360) degrees")
+
+
+@dataclass(frozen=True)
 class Sentinel2Geometry:
-    """Scene-mean illumination and viewing geometry, in degrees."""
+    """Solar geometry and mean Sentinel-2 viewing geometry, in degrees.
+
+    ``view_zenith_deg`` and ``view_azimuth_deg`` provide a scene-level
+    summary and a backward-compatible fallback. Geometry read from
+    ``MTD_TL.xml`` also contains the mean direction of every selected band in
+    ``viewing_by_band``.
+    """
 
     solar_zenith_deg: float
     solar_azimuth_deg: float
     view_zenith_deg: float = 0.0
     view_azimuth_deg: float = 0.0
+    viewing_by_band: Mapping[
+        str, Sentinel2BandViewingGeometry
+    ] = field(default_factory=dict)
 
     def validate(self) -> None:
         """Validate angle ranges accepted by the forward model."""
@@ -69,6 +99,27 @@ class Sentinel2Geometry:
         ):
             if not 0.0 <= value < 360.0:
                 raise ValueError(f"{name} must be in [0, 360)")
+        for band_name, viewing in self.viewing_by_band.items():
+            if normalize_sentinel2_band_name(band_name) != band_name:
+                raise ValueError(
+                    "viewing_by_band keys must use canonical Sentinel-2 "
+                    "band names"
+                )
+            if not isinstance(viewing, Sentinel2BandViewingGeometry):
+                raise TypeError(
+                    "viewing_by_band values must be "
+                    "Sentinel2BandViewingGeometry instances"
+                )
+            viewing.validate()
+
+    def viewing_for_band(self, band_name: str) -> tuple[float, float]:
+        """Return the band mean direction or the scene-level fallback."""
+
+        band_name = normalize_sentinel2_band_name(band_name)
+        viewing = self.viewing_by_band.get(band_name)
+        if viewing is None:
+            return self.view_zenith_deg, self.view_azimuth_deg
+        return viewing.zenith_deg, viewing.azimuth_deg
 
 
 @dataclass(frozen=True)
@@ -190,10 +241,13 @@ def read_mtd_tl_geometry(
 ) -> tuple[Sentinel2Geometry, datetime]:
     """Read mean solar and selected-band viewing geometry from ``MTD_TL.xml``.
 
-    The current REDRESS model accepts one viewing geometry for all bands.
-    The band-specific mean directions stored in the metadata are therefore
-    averaged as three-dimensional unit vectors. Solar geometry is common to
-    every MSI band.
+    Every selected band retains its own mean viewing direction. Their vector
+    mean is also stored as the scene-level summary and backward-compatible
+    fallback. Solar geometry is common to every MSI band.
+
+    TODO: interpolate the per-band, per-detector viewing-angle grids and use
+    the detector footprint of each pixel when this extra spatial detail is
+    required.
     """
 
     mtd_tl_file = Path(mtd_tl_file).expanduser().resolve()
@@ -262,6 +316,10 @@ def read_mtd_tl_geometry(
         solar_azimuth_deg=solar_azimuth,
         view_zenith_deg=view_zenith,
         view_azimuth_deg=view_azimuth,
+        viewing_by_band={
+            name: Sentinel2BandViewingGeometry(*viewing_by_band[name])
+            for name in requested_bands
+        },
     )
     geometry.validate()
     return geometry, acquisition_time
@@ -519,17 +577,31 @@ def validate_central_pixel_context(
         )
 
 
-def _constant_angles(dem: Dem, geometry: Sentinel2Geometry) -> xr.Dataset:
-    """Create DEM-aligned angle fields in radians."""
+def _constant_angles(
+    dem: Dem,
+    geometry: Sentinel2Geometry,
+    band_name: str | None = None,
+) -> xr.Dataset:
+    """Create DEM-aligned angle fields in radians.
+
+    When ``band_name`` is supplied, its mean viewing direction is used. A
+    manually constructed geometry without per-band values retains the
+    scene-level viewing direction as a backward-compatible fallback.
+    """
 
     geometry.validate()
+    if band_name is None:
+        view_zenith = geometry.view_zenith_deg
+        view_azimuth = geometry.view_azimuth_deg
+    else:
+        view_zenith, view_azimuth = geometry.viewing_for_band(band_name)
     shape = dem.bands["altitude"].shape
     coords = dem.bands["altitude"].coords
     fields = {
         "SZA": geometry.solar_zenith_deg,
         "SAA": geometry.solar_azimuth_deg,
-        "VZA": geometry.view_zenith_deg,
-        "VAA": geometry.view_azimuth_deg,
+        "VZA": view_zenith,
+        "VAA": view_azimuth,
     }
     angles = xr.Dataset(coords=coords)
     for name, value in fields.items():
@@ -542,6 +614,97 @@ def _constant_angles(dem: Dem, geometry: Sentinel2Geometry) -> xr.Dataset:
     return angles
 
 
+def _view_dependent_topography(
+    dem: Dem,
+    angles: xr.Dataset,
+) -> xr.Dataset:
+    """Return topography with viewing terms evaluated for one band.
+
+    Altitude, slope, illumination, shadows, sky view and terrain
+    configuration are independent of the MSI band viewing direction and are
+    shared without recomputation. Effective viewing zenith, local relative
+    azimuth and sensor visibility are recalculated for the supplied angles.
+    """
+
+    required = {"altitude", "slope", "aspect", "eff_sza", "vt", "ct"}
+    missing = required.difference(dem.bands)
+    if missing:
+        raise ValueError(
+            "common topographic products are missing: "
+            + ", ".join(sorted(missing))
+        )
+    if "horizon_ele" not in dem.bands:
+        raise ValueError("horizon_ele is required for sensor visibility")
+
+    view_dependent = {
+        "eff_vza",
+        "local_relative_azimuth",
+        "local_art_relative_azimuth",
+        "view_ground",
+    }
+    spatial_variables = {
+        name: variable
+        for name, variable in dem.bands.data_vars.items()
+        if name not in view_dependent
+        and set(variable.dims).issubset({"x", "y"})
+    }
+    topography = xr.Dataset(spatial_variables)
+    slope = dem.bands["slope"].data
+    aspect = dem.bands["aspect"].data
+    effective_viewing_zenith = dem_products.effective_zenith_angle(
+        angles["VZA"].data,
+        angles["VAA"].data,
+        slope,
+        aspect,
+    )
+    local_relative_azimuth = dem_products.local_relative_azimuth(
+        angles["SZA"].data,
+        angles["SAA"].data,
+        angles["VZA"].data,
+        angles["VAA"].data,
+        slope,
+        aspect,
+    )
+    local_art_relative_azimuth = dem_products.art_relative_azimuth(
+        local_relative_azimuth
+    )
+    view_ground = dem_products.terrain_visibility(
+        dem.bands["horizon_ele"].data,
+        angles["VZA"].data,
+        angles["VAA"].data,
+        effective_viewing_zenith,
+        min_cosine=0.0,
+    )
+    valid_surface = np.isfinite(slope) & np.isfinite(aspect)
+    view_ground = np.where(valid_surface, view_ground, np.nan)
+
+    coords = {
+        name: coordinate
+        for name, coordinate in dem.bands.coords.items()
+        if set(coordinate.dims).issubset({"x", "y"})
+    }
+    for name, values in (
+        ("eff_vza", effective_viewing_zenith),
+        ("local_relative_azimuth", local_relative_azimuth),
+        ("local_art_relative_azimuth", local_art_relative_azimuth),
+        ("view_ground", view_ground),
+    ):
+        topography[name] = xr.DataArray(
+            values,
+            dims=("x", "y"),
+            coords=coords,
+        )
+    for name in (
+        "eff_vza", "local_relative_azimuth", "local_art_relative_azimuth",
+    ):
+        topography[name].attrs["units"] = "radian"
+    topography["view_ground"].attrs.update(
+        units="1",
+        long_name="binary terrain visibility toward the sensor",
+    )
+    return topography
+
+
 def _output_dataset(model: Model, dem: Dem) -> xr.Dataset:
     """Collect model fields in a CF-oriented band, y, x dataset."""
 
@@ -552,6 +715,13 @@ def _output_dataset(model: Model, dem: Dem) -> xr.Dataset:
     radiance = np.stack(
         [model.toa_rad[band].values for band in bands]
     ).astype(np.float32)
+    viewing_zenith = []
+    viewing_azimuth = []
+    for band in bands:
+        angles, _ = model._geometry_for_band(band)
+        viewing_zenith.append(np.rad2deg(np.nanmean(angles["VZA"].data)))
+        viewing_azimuth.append(np.rad2deg(np.nanmean(angles["VAA"].data)))
+    reference_angles, _ = model._geometry_for_band(bands[0])
     x, y = _raster_coordinates(dem.geotransform, reflectance.shape[1:])
 
     output = xr.Dataset(
@@ -564,6 +734,12 @@ def _output_dataset(model: Model, dem: Dem) -> xr.Dataset:
             "wavelength_nm": (
                 "band", np.asarray(model.meta["wavelengths"], dtype=float)
             ),
+            "viewing_zenith_deg": (
+                "band", np.asarray(viewing_zenith, dtype=float)
+            ),
+            "viewing_azimuth_deg": (
+                "band", np.asarray(viewing_azimuth, dtype=float)
+            ),
             "x": x,
             "y": y,
         },
@@ -572,6 +748,13 @@ def _output_dataset(model: Model, dem: Dem) -> xr.Dataset:
             "Conventions": "CF-1.8",
             "platform": model.meta["platform"],
             "sensor": "MSI",
+            "viewing_geometry": "mean angle of each Sentinel-2 band",
+            "solar_zenith_deg": float(np.rad2deg(
+                np.nanmean(reference_angles["SZA"].data)
+            )),
+            "solar_azimuth_deg": float(np.rad2deg(
+                np.nanmean(reference_angles["SAA"].data)
+            )),
         },
     )
     output["toa_reflectance"].attrs.update(
@@ -590,12 +773,18 @@ def _output_dataset(model: Model, dem: Dem) -> xr.Dataset:
     output["wavelength_nm"].attrs.update(
         long_name="response-weighted effective wavelength", units="nm"
     )
-
-    topographic_fields = (
-        "altitude", "slope", "aspect", "eff_sza", "eff_vza", "vt", "ct",
-        "beam_visibility", "view_ground",
+    output["viewing_zenith_deg"].attrs.update(
+        long_name="band mean viewing zenith angle", units="degree"
     )
-    for name in topographic_fields:
+    output["viewing_azimuth_deg"].attrs.update(
+        long_name="band mean viewing azimuth angle", units="degree"
+    )
+
+    common_topographic_fields = (
+        "altitude", "slope", "aspect", "eff_sza", "vt", "ct",
+        "beam_visibility",
+    )
+    for name in common_topographic_fields:
         if name in dem.bands:
             output[name] = xr.DataArray(
                 np.asarray(dem.bands[name].values, dtype=np.float32),
@@ -603,6 +792,19 @@ def _output_dataset(model: Model, dem: Dem) -> xr.Dataset:
                 coords={"x": x, "y": y},
                 attrs=dict(dem.bands[name].attrs),
             )
+
+    for name in ("eff_vza", "view_ground"):
+        values = np.stack([
+            model._geometry_for_band(band)[1][name].values
+            for band in bands
+        ]).astype(np.float32)
+        source = model._geometry_for_band(bands[0])[1][name]
+        output[name] = xr.DataArray(
+            values,
+            dims=("band", "y", "x"),
+            coords={"band": output["band"], "x": x, "y": y},
+            attrs=dict(source.attrs),
+        )
 
     return output
 
@@ -627,6 +829,10 @@ def simulate_sentinel2_scene(
 ) -> xr.Dataset:
     """Run REDRESS for every selected Sentinel-2 band over a DEM.
 
+    Mean viewing zenith and azimuth are selected independently for each band
+    when present in ``geometry.viewing_by_band``. The expensive solar and
+    terrain products are shared; only view-dependent products are rebuilt.
+
     ``neighbour_exitance`` is the practical default for image-sized rasters.
     ``visible_exitance`` is more geometrically explicit but currently traces
     the same terrain rays again for every band and radiance iteration, making
@@ -635,17 +841,37 @@ def simulate_sentinel2_scene(
 
     atmosphere.validate()
     snow.validate()
+    geometry.validate()
     if "altitude" not in dem.bands:
         raise ValueError("dem must contain an altitude band")
 
-    dem.angles = _constant_angles(dem, geometry)
+    selected_bands = tuple(
+        normalize_sentinel2_band_name(name) for name in band_names
+    )
+    if not selected_bands:
+        raise ValueError("band_names cannot be empty")
+    if len(selected_bands) != len(set(selected_bands)):
+        raise ValueError("band_names contains duplicate Sentinel-2 bands")
+
+    # Solar and terrain geometry are common to all bands. Compute these
+    # expensive products once using the first band, then update only the
+    # view-dependent terms for each band mean direction.
+    dem.angles = _constant_angles(dem, geometry, selected_bands[0])
     dem.compute_horizon(N=horizon_half_directions)
     dem.compute_topo_bands(
         terrain_configuration_method=terrain_configuration_method
     )
+    angles_by_band = {
+        band: _constant_angles(dem, geometry, band)
+        for band in selected_bands
+    }
+    topography_by_band = {
+        band: _view_dependent_topography(dem, angles_by_band[band])
+        for band in selected_bands
+    }
 
     model = Model()
-    model.set_sentinel2(platform, band_names)
+    model.set_sentinel2(platform, selected_bands)
     model.import_rt_model("python_6S")
     model.ssa = snow.specific_surface_area_m2_kg
     model.snow_albedo_model = snow.albedo_model
@@ -655,8 +881,10 @@ def simulate_sentinel2_scene(
         dust_density_kg_m3=snow.dust_density_kg_m3,
         dust_model=snow.dust_model,
     )
-    model.angles = dem.angles
-    model.topo_bands = dem.bands
+    model.angles = angles_by_band[selected_bands[0]]
+    model.angles_by_band = angles_by_band
+    model.topo_bands = topography_by_band[selected_bands[0]]
+    model.topo_bands_by_band = topography_by_band
     model.set_rt_options(
         aero=atmosphere.aerosol,
         aod=atmosphere.aod550,

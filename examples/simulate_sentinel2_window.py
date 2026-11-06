@@ -188,12 +188,19 @@ def main() -> None:
         f"dust {arguments.dust:g} µg g-1 ({arguments.dust_model})"
     )
     print(
-        "Geometry: "
+        "Solar geometry: "
         f"SZA={auxiliary.geometry.solar_zenith_deg:.3f}°, "
-        f"SAA={auxiliary.geometry.solar_azimuth_deg:.3f}°, "
-        f"VZA={auxiliary.geometry.view_zenith_deg:.3f}°, "
-        f"VAA={auxiliary.geometry.view_azimuth_deg:.3f}°"
+        f"SAA={auxiliary.geometry.solar_azimuth_deg:.3f}°"
     )
+    print("Band mean viewing geometry:")
+    for band in BANDS:
+        view_zenith, view_azimuth = (
+            auxiliary.geometry.viewing_for_band(band)
+        )
+        print(
+            f"  {band}: VZA={view_zenith:.3f}°, "
+            f"VAA={view_azimuth:.3f}°"
+        )
 
     scene = simulate_sentinel2_scene(
         dem,

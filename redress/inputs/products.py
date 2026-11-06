@@ -379,6 +379,9 @@ class Model(object):
             "dust_model": "muller2011",
         }
         self.angles = None
+        self.angles_by_band = {}
+        self.topo_bands = None
+        self.topo_bands_by_band = {}
         self.dem = None
         self.meta = None
         self.rt_model = None
@@ -408,6 +411,26 @@ class Model(object):
             raise IOError("Unable to find the rt model %s. %s." % (rt_name, e))
 
         self.rt_model = getattr(module, "rtmodel")
+
+    def _geometry_for_band(self, band):
+        """Return the angle and topography datasets used by one band.
+
+        Generic REDRESS readers continue to use ``angles`` and
+        ``topo_bands``. Sensor readers may additionally provide dictionaries
+        keyed by band name when the viewing direction changes spectrally.
+        """
+
+        has_band_angles = band in self.angles_by_band
+        has_band_topography = band in self.topo_bands_by_band
+        if has_band_angles != has_band_topography:
+            raise ValueError(
+                f"angles and topography must both be configured for {band}"
+            )
+        angles = self.angles_by_band.get(band, self.angles)
+        topography = self.topo_bands_by_band.get(band, self.topo_bands)
+        if angles is None or topography is None:
+            raise ValueError(f"geometry has not been configured for {band}")
+        return angles, topography
 
     def set_sentinel2(self, platform, band_names=None):
         """Configure the model for Sentinel-2 MSI spectral bands.
@@ -506,20 +529,23 @@ class Model(object):
 
         # Calculate the direct and diffuse illumination ratio using the mean
         # geometry and elevation of the scene.
-        for wvl, band_definition in zip(self.meta["wavelengths"],
-                                        band_definitions):
+        for band, wvl, band_definition in zip(
+                self.meta["bandlist"],
+                self.meta["wavelengths"],
+                band_definitions):
+            angles, topography = self._geometry_for_band(band)
             rt = self.rt_model()
             rt_wavelength = (band_definition.py6s_filter
                              if band_definition is not None else wvl)
             # Global satellite geometry is used here only for the 6S
             # atmospheric irradiance calculation. The snow DHR and HDR below
             # use eff_sza and eff_vza, respectively.
-            rt.run(self.angles["SZA"].data.mean(),
-                   self.angles["SAA"].data.mean(),
-                   self.angles["VZA"].data.mean(),
-                   self.angles["VAA"].data.mean(),
+            rt.run(angles["SZA"].data.mean(),
+                   angles["SAA"].data.mean(),
+                   angles["VZA"].data.mean(),
+                   angles["VAA"].data.mean(),
                    rt_wavelength,
-                   np.nanmean(self.topo_bands["altitude"].data),
+                   np.nanmean(topography["altitude"].data),
                    self.rt_options["aerosol_model"],
                    aod=self.rt_options["aod"],
                    # Only the atmosphere-only direct/diffuse ratio is used.
@@ -540,10 +566,10 @@ class Model(object):
             self.difftot.append(diffuse_total_ratio)
 
             local_incidence = _surface_optics_zenith(
-                self.topo_bands["eff_sza"].data
+                topography["eff_sza"].data
             )
             local_view_zenith = _surface_optics_zenith(
-                self.topo_bands["eff_vza"].data
+                topography["eff_vza"].data
             )
 
             # The direct albedo is the DHR at local incidence. Equation 5 of
@@ -617,29 +643,31 @@ class Model(object):
         band_definitions = self.meta.get("band_definitions")
         if band_definitions is None:
             band_definitions = [None] * len(self.meta["wavelengths"])
-        if "local_art_relative_azimuth" in self.topo_bands:
-            relative_azimuth = self.topo_bands[
-                "local_art_relative_azimuth"
-            ]
-        else:
-            geometric_relative_azimuth = self.topo_bands.get(
-                "local_relative_azimuth",
-                self.angles["SAA"] - self.angles["VAA"],
-            )
-            relative_azimuth = dem_products.art_relative_azimuth(
-                geometric_relative_azimuth
-            )
-
-        illumination_zenith = _surface_optics_zenith(
-            self.topo_bands["eff_sza"]
-        )
-        viewing_zenith = _surface_optics_zenith(
-            self.topo_bands["eff_vza"]
-        )
 
         # Calculate BRF for the local geometry, wavelength and snow SSA.
-        for wvl, band_definition in zip(self.meta["wavelengths"],
-                                        band_definitions):
+        for band, wvl, band_definition in zip(
+                self.meta["bandlist"],
+                self.meta["wavelengths"],
+                band_definitions):
+            angles, topography = self._geometry_for_band(band)
+            if "local_art_relative_azimuth" in topography:
+                relative_azimuth = topography[
+                    "local_art_relative_azimuth"
+                ]
+            else:
+                geometric_relative_azimuth = topography.get(
+                    "local_relative_azimuth",
+                    angles["SAA"] - angles["VAA"],
+                )
+                relative_azimuth = dem_products.art_relative_azimuth(
+                    geometric_relative_azimuth
+                )
+            illumination_zenith = _surface_optics_zenith(
+                topography["eff_sza"]
+            )
+            viewing_zenith = _surface_optics_zenith(
+                topography["eff_vza"]
+            )
             if band_definition is None:
                 band_brf = snow.brf_kokhanovsky(
                     illumination_zenith,
@@ -730,10 +758,11 @@ class Model(object):
 
             rt_wavelength = (definition.py6s_filter
                              if definition is not None else wvl)
+            angles, topography = self._geometry_for_band(band)
 
             result = iterative_radiance(
-                self.topo_bands,
-                self.angles,
+                topography,
+                angles,
                 wvl,
                 hdr,
                 bhr,
@@ -760,7 +789,7 @@ class Model(object):
             (synthetic_toa_radiance,
              synthetic_toa_reflectance,
              radiance_components) = result
-            spatial_coords = _spatial_coords(self.topo_bands)
+            spatial_coords = _spatial_coords(topography)
             self.toa_rad[band] = xr.DataArray(synthetic_toa_radiance,
                                               dims=['x', 'y'],
                                               coords=spatial_coords)

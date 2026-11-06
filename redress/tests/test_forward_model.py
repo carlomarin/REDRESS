@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from redress.inputs.products import Model
 from redress.topography.forward_model import (
     Cases,
     _anisotropic_sky_factor,
@@ -26,6 +27,28 @@ from redress.topography.idealized import (
     solve_two_wall_irradiance,
     symmetric_v_valley,
 )
+
+
+def test_model_selects_band_specific_geometry_with_legacy_fallback():
+    model = Model()
+    fallback_angles = xr.Dataset({"VZA": xr.DataArray(0.0)})
+    fallback_topography = xr.Dataset({"eff_vza": xr.DataArray(0.0)})
+    band_angles = xr.Dataset({"VZA": xr.DataArray(0.1)})
+    band_topography = xr.Dataset({"eff_vza": xr.DataArray(0.2)})
+    model.angles = fallback_angles
+    model.topo_bands = fallback_topography
+    model.angles_by_band = {"B11": band_angles}
+    model.topo_bands_by_band = {"B11": band_topography}
+
+    angles, topography = model._geometry_for_band("B11")
+    assert angles is band_angles
+    assert topography is band_topography
+    angles, topography = model._geometry_for_band("B03")
+    assert angles is fallback_angles
+    assert topography is fallback_topography
+    model.angles_by_band["B03"] = band_angles
+    with pytest.raises(ValueError, match="both be configured"):
+        model._geometry_for_band("B03")
 
 
 def test_anisotropic_sky_factor_respects_sky_view_in_shadow():
