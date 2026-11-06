@@ -249,6 +249,38 @@ def _interpolate_atmospheric_values(
     return np.where(np.isfinite(altitude), interpolated, np.nan)
 
 
+def atmospheric_columns_for_altitude(rt_options, altitude_m):
+    """Return the water, ozone and aerosol columns above a 6S target.
+
+    When a vertical column profile is supplied, each altitude node receives
+    columns referenced to the same atmospheric model surface. Without a
+    profile, the scalar REDRESS options are retained for backward
+    compatibility.
+    """
+
+    profile = rt_options.get("column_profile")
+    if profile is None:
+        columns = {
+            "water": float(rt_options["water"]),
+            "ozone": float(rt_options["ozone"]),
+            "aod": float(rt_options["aod"]),
+        }
+    else:
+        node = profile.at_altitude(float(altitude_m))
+        columns = {
+            "water": float(node.water_vapour_g_cm2),
+            "ozone": float(node.ozone_cm_atm),
+            "aod": float(node.aod550),
+        }
+
+    if any(
+        not np.isfinite(value) or value < 0.0
+        for value in columns.values()
+    ):
+        raise ValueError("atmospheric columns must be finite and non-negative")
+    return columns
+
+
 def _run_atmospheric_altitude_nodes(
     rt_model,
     angles,
@@ -272,6 +304,7 @@ def _run_atmospheric_altitude_nodes(
 
     values = []
     for altitude_m in altitude_nodes_m:
+        columns = atmospheric_columns_for_altitude(rt_options, altitude_m)
         rt_model.run(
             zenith,
             azimuth,
@@ -280,16 +313,22 @@ def _run_atmospheric_altitude_nodes(
             rt_wavelength,
             altitude_m,
             rt_options["aerosol_model"],
-            aod=rt_options["aod"],
+            aod=columns["aod"],
             refl=0.0,
-            water=rt_options["water"],
-            ozone=rt_options["ozone"],
+            water=columns["water"],
+            ozone=columns["ozone"],
             atmo=rt_options["atmo_model"],
             atcor=rt_options["atcor"],
             month=rt_options.get("month"),
             day=rt_options.get("day"),
         )
-        values.append(_atmospheric_output_values(rt_model.outputs))
+        atmospheric_values = _atmospheric_output_values(rt_model.outputs)
+        atmospheric_values.update({
+            "water_vapour_g_cm2": columns["water"],
+            "ozone_cm_atm": columns["ozone"],
+            "aod550": columns["aod"],
+        })
+        values.append(atmospheric_values)
     return values
 
 
@@ -307,7 +346,9 @@ def build_atmospheric_altitude_lookup(
     one for solar illumination and one with the illumination and viewing
     geometries interchanged. A ``None`` spacing reproduces the legacy
     scene-mean atmosphere. Supplying a spacing in metres activates the
-    elevation lookup.
+    elevation lookup. If a column profile is available, water vapour and
+    aerosol columns are reconstructed independently at every node; ozone
+    remains constant with elevation.
     """
 
     altitude = np.asarray(topo_bands["altitude"].data, dtype=np.float64)

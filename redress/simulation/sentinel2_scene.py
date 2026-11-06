@@ -28,6 +28,7 @@ from redress.inputs.sentinel2 import (
     SENTINEL2_BAND_NAMES,
     normalize_sentinel2_band_name,
 )
+from redress.rtmodel.atmosphere import AtmosphericColumnProfile
 from redress.readers.sentinel2_atmosphere import (
     Sentinel2AtmosphericInputs,
     Sentinel2Site,
@@ -133,6 +134,7 @@ class Sentinel2Atmosphere:
     month: int
     day: int
     atmospheric_profile: str | None = None
+    column_profile: AtmosphericColumnProfile | None = None
 
     def validate(self) -> None:
         """Validate the scalar atmospheric quantities."""
@@ -515,9 +517,10 @@ def read_sentinel2_auxiliary_data(
     """Prepare central-pixel geometry and Py6S atmosphere from an L1C SAFE.
 
     Water vapour and aerosol optical depth are corrected from the CAMS model
-    surface to the central DEM elevation. Ozone is left unchanged. The result
-    should be used with a scene-mean 6S altitude, because the corrected columns
-    describe this central pixel rather than every elevation in the DEM.
+    surface to the central DEM elevation for the reported site values. The
+    original model-surface columns and scale heights are also retained so the
+    forward model can construct target-level columns at every altitude node.
+    Ozone is left unchanged.
     """
 
     geometry, acquisition_time = read_mtd_tl_geometry(
@@ -543,6 +546,7 @@ def read_sentinel2_auxiliary_data(
         ozone_cm_atm=inputs.ozone_cm_atm,
         month=acquisition_time.month,
         day=acquisition_time.day,
+        column_profile=inputs.column_profile(),
     )
     atmosphere.validate()
     return Sentinel2AuxiliaryData(
@@ -894,6 +898,7 @@ def simulate_sentinel2_scene(
         atcor=False,
         month=atmosphere.month,
         day=atmosphere.day,
+        column_profile=atmosphere.column_profile,
     )
     model.simulate_TOA_radiance(
         case_number,
@@ -915,6 +920,18 @@ def simulate_sentinel2_scene(
         water_vapour_g_cm2=atmosphere.water_vapour_g_cm2,
         ozone_cm_atm=atmosphere.ozone_cm_atm,
     )
+    if atmosphere.column_profile is not None:
+        output.attrs.update(
+            atmospheric_column_reference_elevation_m=(
+                atmosphere.column_profile.reference_elevation_m
+            ),
+            water_scale_height_m=(
+                atmosphere.column_profile.water_scale_height_m
+            ),
+            aerosol_scale_height_m=(
+                atmosphere.column_profile.aerosol_scale_height_m
+            ),
+        )
     return output
 
 

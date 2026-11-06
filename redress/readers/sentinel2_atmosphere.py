@@ -24,6 +24,8 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
+from redress.rtmodel.atmosphere import AtmosphericColumnProfile
+
 
 STANDARD_GRAVITY_M_S2 = 9.80665
 WATER_VAPOUR_SCALE_HEIGHT_M = 2000.0
@@ -108,7 +110,36 @@ class Sentinel2AtmosphericInputs:
     aerosol_elevation_factor: float
     aerosol_source: str
     auxiliary_files: tuple[Path, ...]
+    water_scale_height_m: float = WATER_VAPOUR_SCALE_HEIGHT_M
+    aerosol_scale_height_m: float = AEROSOL_SCALE_HEIGHT_M
     notes: tuple[str, ...] = ()
+
+    def column_profile(self) -> AtmosphericColumnProfile:
+        """Return the vertical column model used at 6S altitude nodes.
+
+        CAMS total columns refer to the sampled model surface. For legacy
+        products without surface geopotential, the already prepared site
+        columns define the reference level. Ozone is held constant because
+        its stratospheric column changes negligibly over the DEM relief.
+        """
+
+        if self.model_surface_elevation_m is None:
+            reference_elevation_m = self.site.elevation_m
+            water_vapour_g_cm2 = self.water_vapour_g_cm2
+            aod550 = self.aod550
+        else:
+            reference_elevation_m = self.model_surface_elevation_m
+            water_vapour_g_cm2 = self.raw_water_vapour_g_cm2
+            aod550 = self.raw_aod550
+
+        return AtmosphericColumnProfile(
+            reference_elevation_m=reference_elevation_m,
+            water_vapour_g_cm2=water_vapour_g_cm2,
+            ozone_cm_atm=self.ozone_cm_atm,
+            aod550=aod550,
+            water_scale_height_m=self.water_scale_height_m,
+            aerosol_scale_height_m=self.aerosol_scale_height_m,
+        )
 
     def py6s_settings(self) -> dict[str, Any]:
         """Return native Py6S atmosphere and aerosol parameter objects.
@@ -142,7 +173,7 @@ class Sentinel2AtmosphericInputs:
         }
 
     def redress_rt_options(self) -> dict[str, Any]:
-        """Return keyword arguments accepted by ``rtmodel.run``."""
+        """Return keyword arguments accepted by ``Model.set_rt_options``."""
 
         aerosol = (
             dict(self.aerosol_components)
@@ -155,6 +186,7 @@ class Sentinel2AtmosphericInputs:
             "aod": self.aod550,
             "water": self.water_vapour_g_cm2,
             "ozone": self.ozone_cm_atm,
+            "column_profile": self.column_profile(),
         }
 
 
@@ -767,5 +799,7 @@ def read_sentinel2_l1c_atmosphere(
         aerosol_elevation_factor=aerosol_factor,
         aerosol_source=aerosol_source,
         auxiliary_files=tuple(sorted(auxiliary_files)),
+        water_scale_height_m=float(water_scale_height_m),
+        aerosol_scale_height_m=float(aerosol_scale_height_m),
         notes=tuple(notes),
     )

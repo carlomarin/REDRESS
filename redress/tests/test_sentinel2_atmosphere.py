@@ -5,6 +5,8 @@
 import numpy as np
 import pytest
 
+from redress.rtmodel.atmosphere import AtmosphericColumnProfile
+
 from redress.readers.sentinel2_atmosphere import (
     _bilinear_sample,
     _matching_bands,
@@ -16,6 +18,29 @@ from redress.readers.sentinel2_atmosphere import (
     ozone_to_cm_atm,
     water_to_g_cm2,
 )
+
+
+def test_atmospheric_columns_are_constructed_at_every_altitude_node():
+    profile = AtmosphericColumnProfile(
+        reference_elevation_m=1000.0,
+        water_vapour_g_cm2=2.0,
+        ozone_cm_atm=0.3,
+        aod550=0.2,
+        water_scale_height_m=2000.0,
+        aerosol_scale_height_m=1000.0,
+    )
+
+    columns = profile.at_altitudes([1000.0, 2000.0, 3000.0])
+
+    np.testing.assert_allclose(
+        columns["water_vapour_g_cm2"],
+        2.0 * np.exp(-np.asarray([0.0, 0.5, 1.0])),
+    )
+    np.testing.assert_allclose(
+        columns["aod550"],
+        0.2 * np.exp(-np.asarray([0.0, 1.0, 2.0])),
+    )
+    np.testing.assert_allclose(columns["ozone_cm_atm"], 0.3)
 
 
 class _MetadataBand:

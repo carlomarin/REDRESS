@@ -18,6 +18,7 @@ from redress.topography.forward_model import (
     DEFAULT_PIXEL_RESOLUTION_M,
     DEFAULT_TERRAIN_WINDOW_WIDTH_M,
     Cases,
+    atmospheric_columns_for_altitude,
     iterative_radiance,
 )
 
@@ -483,21 +484,37 @@ class Model(object):
             "dust_model": dust_model,
         }
 
-    def set_rt_options(self, aero, aod=0.1, refl=0.99, water=0.05,
-                       ozone=0.3, atmos=None, atcor=False,
-                       month=None, day=None):
+    def set_rt_options(
+        self,
+        aero,
+        aod=0.1,
+        refl=0.99,
+        water=0.05,
+        ozone=0.3,
+        atmos=None,
+        atcor=False,
+        month=None,
+        day=None,
+        column_profile=None,
+    ):
         """Set the atmopheric conditions as entry options for the RT Model."""
 
         if (month is None) != (day is None):
             raise ValueError("month and day must be provided together")
         if month is not None:
             date(2000, int(month), int(day))
+        if column_profile is not None and atmos is not None:
+            raise ValueError(
+                "column_profile requires user water and ozone columns; "
+                "atmos must be None"
+            )
 
         self.rt_options.update({"aerosol_model": aero,
                                 "aod": aod, "refl": refl, "water": water,
                                 "ozone": ozone, "atmo_model": atmos,
                                 "atcor": atcor,
-                                "month": month, "day": day})
+                                "month": month, "day": day,
+                                "column_profile": column_profile})
 
     def compute_albedo(self):
         if self.ssa is None:
@@ -540,19 +557,24 @@ class Model(object):
             # Global satellite geometry is used here only for the 6S
             # atmospheric irradiance calculation. The snow DHR and HDR below
             # use eff_sza and eff_vza, respectively.
+            mean_altitude_m = np.nanmean(topography["altitude"].data)
+            columns = atmospheric_columns_for_altitude(
+                self.rt_options,
+                mean_altitude_m,
+            )
             rt.run(angles["SZA"].data.mean(),
                    angles["SAA"].data.mean(),
                    angles["VZA"].data.mean(),
                    angles["VAA"].data.mean(),
                    rt_wavelength,
-                   np.nanmean(topography["altitude"].data),
+                   mean_altitude_m,
                    self.rt_options["aerosol_model"],
-                   aod=self.rt_options["aod"],
+                   aod=columns["aod"],
                    # Only the atmosphere-only direct/diffuse ratio is used.
                    # REDRESS calculates surface coupling explicitly.
                    refl=0.0,
-                   water=self.rt_options["water"],
-                   ozone=self.rt_options["ozone"],
+                   water=columns["water"],
+                   ozone=columns["ozone"],
                    atmo=self.rt_options["atmo_model"],
                    atcor=self.rt_options["atcor"],
                    month=self.rt_options.get("month"),

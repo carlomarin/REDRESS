@@ -9,6 +9,7 @@ import pytest
 import xarray as xr
 
 from redress.inputs.products import Model
+from redress.rtmodel.atmosphere import AtmosphericColumnProfile
 from redress.topography.forward_model import (
     Cases,
     _anisotropic_sky_factor,
@@ -190,11 +191,17 @@ class _AltitudeDependentAtmosphere:
 
     outputs = None
     altitudes_m = []
+    columns = []
 
     @classmethod
     def run(cls, sza, saa, vza, vaa, wavelength, altitude, aerosol, **kwargs):
-        del sza, saa, vza, vaa, wavelength, aerosol, kwargs
+        del sza, saa, vza, vaa, wavelength, aerosol
         cls.altitudes_m.append(float(altitude))
+        cls.columns.append({
+            "water": kwargs["water"],
+            "ozone": kwargs["ozone"],
+            "aod": kwargs["aod"],
+        })
         cls.outputs = SimpleNamespace(
             direct_solar_irradiance=500.0 + 0.05 * altitude,
             diffuse_solar_irradiance=100.0 - 0.01 * altitude,
@@ -278,6 +285,76 @@ def test_atmospheric_lookup_interpolates_every_field_over_altitude():
         1500.0,
         2000.0,
     ]
+
+
+def test_atmospheric_lookup_passes_node_specific_columns_to_6s():
+    angles, topography = _uniform_geometry(45.0, shape=(2, 2))
+    topography["altitude"] = (
+        ("x", "y"),
+        np.asarray([[1000.0, 1500.0], [2000.0, 2500.0]]),
+    )
+    profile = AtmosphericColumnProfile(
+        reference_elevation_m=1000.0,
+        water_vapour_g_cm2=2.0,
+        ozone_cm_atm=0.3,
+        aod550=0.2,
+        water_scale_height_m=2000.0,
+        aerosol_scale_height_m=1000.0,
+    )
+    _AltitudeDependentAtmosphere.altitudes_m = []
+    _AltitudeDependentAtmosphere.columns = []
+
+    lookup = build_atmospheric_altitude_lookup(
+        topography,
+        angles,
+        rt_wavelength=550.0,
+        rt_model=_AltitudeDependentAtmosphere,
+        rt_options={
+            "aerosol_model": "Continental",
+            "aod": 0.2,
+            "water": 2.0,
+            "ozone": 0.3,
+            "atmo_model": None,
+            "atcor": False,
+            "month": 1,
+            "day": 15,
+            "column_profile": profile,
+        },
+        atmosphere_altitude_step_m=500.0,
+    )
+
+    expected_nodes = np.asarray([1000.0, 1500.0, 2000.0, 2500.0])
+    expected_water = 2.0 * np.exp(
+        -(expected_nodes - 1000.0) / 2000.0
+    )
+    expected_aod = 0.2 * np.exp(
+        -(expected_nodes - 1000.0) / 1000.0
+    )
+    forward_columns = _AltitudeDependentAtmosphere.columns[:4]
+
+    np.testing.assert_allclose(
+        [column["water"] for column in forward_columns],
+        expected_water,
+    )
+    np.testing.assert_allclose(
+        [column["aod"] for column in forward_columns],
+        expected_aod,
+    )
+    np.testing.assert_allclose(
+        [column["ozone"] for column in forward_columns],
+        0.3,
+    )
+    np.testing.assert_allclose(
+        lookup["forward"]["water_vapour_g_cm2"],
+        2.0 * np.exp(
+            -(topography["altitude"].data - 1000.0) / 2000.0
+        ),
+        rtol=0.02,
+    )
+    np.testing.assert_allclose(
+        lookup["forward"]["ozone_cm_atm"],
+        0.3,
+    )
 
 
 @pytest.mark.parametrize("sky_view_factor", (1.0, 0.35))
