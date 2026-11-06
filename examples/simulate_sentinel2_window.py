@@ -130,6 +130,18 @@ def parse_arguments() -> argparse.Namespace:
         "skiles2014 (default %(default)s)",
     )
     parser.add_argument(
+        "--aod550", type=float, default=None,
+        help="replace the CAMS aerosol optical depth at 550 nm, for example "
+        "with a sun-photometer value at the scene elevation; the CAMS "
+        "aerosol mixture is kept",
+    )
+    parser.add_argument(
+        "--water-vapour", type=float, default=None,
+        help="replace the ECMWF precipitable water vapour in g cm-2 "
+        "(numerically cm), for example a sun-photometer value at the "
+        "scene elevation",
+    )
+    parser.add_argument(
         "--output-directory", type=Path, required=True,
         help="folder for the aligned DEM, GeoTIFFs and comparison table",
     )
@@ -184,7 +196,25 @@ def main() -> None:
         legacy_aod550=LEGACY_AOD550,
         legacy_aerosol_model=LEGACY_AEROSOL_MODEL,
     )
+    atmosphere = auxiliary.atmosphere
+    if arguments.aod550 is not None:
+        atmosphere = replace(atmosphere, aod550=arguments.aod550)
+    if arguments.water_vapour is not None:
+        atmosphere = replace(
+            atmosphere, water_vapour_g_cm2=arguments.water_vapour
+        )
+    atmosphere.validate()
     print(f"Acquisition: {auxiliary.acquisition_time.isoformat()}")
+    print(
+        f"Water vapour: {atmosphere.water_vapour_g_cm2:.3f} g cm-2"
+        + (" (ECMWF)" if arguments.water_vapour is None else
+           f" (set; ECMWF {auxiliary.atmosphere.water_vapour_g_cm2:.3f})")
+    )
+    print(
+        f"AOD550: {atmosphere.aod550:.4f}"
+        + (" (CAMS)" if arguments.aod550 is None else
+           f" (set; CAMS {auxiliary.atmosphere.aod550:.4f})")
+    )
     print(
         f"Snow SSA: {arguments.ssa:g} m2 kg-1 "
         f"(optical diameter {6.0e3 / (917.0 * arguments.ssa):.2f} mm), "
@@ -210,7 +240,7 @@ def main() -> None:
     scene = simulate_sentinel2_scene(
         dem,
         auxiliary.geometry,
-        auxiliary.atmosphere,
+        atmosphere,
         replace(
             SNOW,
             specific_surface_area_m2_kg=arguments.ssa,
@@ -294,7 +324,9 @@ def main() -> None:
             f"SSA {arguments.ssa:g} m2 kg-1, "
             f"{arguments.snow_albedo.upper()} albedo, "
             f"dust {arguments.dust:g} µg g-1 ({arguments.dust_model}), "
-            f"BC {arguments.black_carbon:g} ng g-1"
+            f"BC {arguments.black_carbon:g} ng g-1, "
+            f"AOD550 {atmosphere.aod550:.3f}, "
+            f"water vapour {atmosphere.water_vapour_g_cm2:.2f} g cm-2"
         ),
     )
     print(f"Comparison figure: {figure_png}")

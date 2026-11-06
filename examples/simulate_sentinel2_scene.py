@@ -32,10 +32,10 @@ from redress.simulation.sentinel2_scene import (
 # Configuration
 # ---------------------------------------------------------------------------
 
-DEM_FILE = Path("/path/to/dem_20m_with_terrain_buffer.tif")
-L1C_SAFE_FOLDER = Path("/path/to/S2B_MSIL1C_YYYYMMDD...SAFE")
-MTD_TL_FILE = Path("/path/to/S2B_MSIL1C_...SAFE/GRANULE/.../MTD_TL.xml")
-OUTPUT_DIRECTORY = Path("outputs/sentinel2_central_pixel")
+DEM_FILE = Path("/mnt/CEPH_PROJECTS/SNOWCOP/REDRESS/dem_simulation_20m.tif")
+L1C_SAFE_FOLDER = Path("/mnt/CEPH_PROJECTS/SNOWCOP/REDRESS/S2B_MSIL1C_20220113T101259_N0510_R022_T32TPS_20240429T001001.SAFE")
+MTD_TL_FILE = Path("/mnt/CEPH_PROJECTS/SNOWCOP/REDRESS/S2B_MSIL1C_20220113T101259_N0510_R022_T32TPS_20240429T001001.SAFE/GRANULE/L1C_T32TPS_A025359_20220113T101258/MTD_TL.xml")
+OUTPUT_DIRECTORY = Path("/mnt/CEPH_PROJECTS/SNOWCOP/REDRESS/sentinel2_central_pixel")
 
 # Small edge gaps introduced by reprojection can be completed from the nearest
 # valid elevation. The run stops if any missing cell is farther than this from
