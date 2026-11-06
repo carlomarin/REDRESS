@@ -7,7 +7,10 @@ M. Lamare, M. Dumont, G. Picard (IGE, CEN).
 import numpy as np
 from scipy.ndimage import uniform_filter
 
-from redress.topography.dem_products import visible_neighbour_mean
+from redress.topography.dem_products import (
+    build_visible_neighbour_geometry,
+    visible_neighbour_mean,
+)
 
 
 DEFAULT_TERRAIN_WINDOW_WIDTH_M = 1500.0
@@ -53,6 +56,55 @@ def _radius_pixels_from_distance(radius_m, pixel_resolution_m):
             "terrain_visibility_radius_m must be a positive finite value"
         )
     return max(1, int(np.ceil(radius_m / float(pixel_resolution_m))))
+
+
+def prepare_visible_neighbour_geometry(
+    topo_bands,
+    pixel_resolution_m,
+    terrain_window_width_m=DEFAULT_TERRAIN_WINDOW_WIDTH_M,
+    terrain_visibility_radius_m=None,
+    terrain_window_size=None,
+    n_directions=64,
+):
+    """Build the DEM-only visible-neighbour operator for reuse.
+
+    The terrain ray tracing depends on elevation, slope, aspect, resolution,
+    visibility radius and azimuth sampling. It is independent of wavelength,
+    atmospheric state and radiance iteration.
+    """
+
+    missing = {"altitude", "slope", "aspect"}.difference(topo_bands)
+    if missing:
+        raise ValueError(
+            "visible_exitance requires topographic bands: "
+            + ", ".join(sorted(missing))
+        )
+    if terrain_window_size is None:
+        terrain_window_size = window_size_from_distance(
+            terrain_window_width_m,
+            pixel_resolution_m,
+        )
+    else:
+        terrain_window_size = _validate_window_size(
+            terrain_window_size,
+            "terrain_window_size",
+        )
+    radius_pixels = (
+        terrain_window_size // 2
+        if terrain_visibility_radius_m is None
+        else _radius_pixels_from_distance(
+            terrain_visibility_radius_m,
+            pixel_resolution_m,
+        )
+    )
+    return build_visible_neighbour_geometry(
+        topo_bands["altitude"].data,
+        topo_bands["slope"].data,
+        topo_bands["aspect"].data,
+        pixel_resolution_m,
+        radius_pixels,
+        n_directions=n_directions,
+    )
 
 
 def _validate_window_size(window_size, name):
@@ -494,6 +546,7 @@ def iterative_radiance(
     weight_terrain_by_neighbour_beam_visibility=True,
     terrain_reflection_method="flat_irradiance",
     terrain_visibility_radius_m=None,
+    visible_neighbour_geometry=None,
     direct_albedo=None,
 ):
     """Iterative solver for TOA radiance.
@@ -516,6 +569,10 @@ def iterative_radiance(
     ``terrain_visibility_radius_m``, or the terrain-window half-width when
     omitted. Because hidden and coplanar terrain receive no weight, the
     radius can exceed the window without diluting the average.
+
+    ``visible_neighbour_geometry`` may contain a precomputed sparse
+    view-factor operator. When omitted, one is built once for this solver
+    call and reused for every reflection order.
 
     In both exitance methods a neighbour radiates its hemispherical albedo
     times its irradiance: ``direct_albedo``, the directional-hemispherical
@@ -694,28 +751,18 @@ def iterative_radiance(
                 sky_view_factor=topo_bands["vt"],
             )
 
-    # Visible-exitance kernel inputs. The ray length defaults to the terrain
-    # window half-width.
+    # Visible-neighbour geometry is independent of wavelength and reflection
+    # order. Direct callers build it once here; Model.simulate_TOA_radiance
+    # supplies one operator shared by all bands.
     if terrain_reflection_method == "visible_exitance":
-        missing = {"altitude", "slope", "aspect"}.difference(topo_bands)
-        if missing:
-            raise ValueError(
-                "visible_exitance requires topographic bands: "
-                + ", ".join(sorted(missing))
+        if visible_neighbour_geometry is None:
+            visible_neighbour_geometry = prepare_visible_neighbour_geometry(
+                topo_bands,
+                pixel_resolution_m,
+                terrain_window_width_m=terrain_window_width_m,
+                terrain_visibility_radius_m=terrain_visibility_radius_m,
+                terrain_window_size=tw,
             )
-        visibility_kernel = {
-            "altitude": topo_bands["altitude"].data,
-            "slope": topo_bands["slope"].data,
-            "aspect": topo_bands["aspect"].data,
-            "pixel_size": pixel_resolution_m,
-            "radius_pixels": (
-                tw // 2
-                if terrain_visibility_radius_m is None
-                else _radius_pixels_from_distance(
-                    terrain_visibility_radius_m, pixel_resolution_m
-                )
-            ),
-        }
     visible_view_factor = np.nan
     terrain_irradiance_previous = 0.0
 
@@ -796,7 +843,7 @@ def iterative_radiance(
             neighbour_exitance, visible_view_factor = visible_neighbour_mean(
                 own_exitance
                 + diffuse_albedo * np.asarray(terrain_irradiance_previous),
-                **visibility_kernel,
+                geometry=visible_neighbour_geometry,
             )
             EtGP = topo_bands["ct"] * np.nan_to_num(neighbour_exitance)
             terrain_irradiance_previous = np.asarray(EtGP)

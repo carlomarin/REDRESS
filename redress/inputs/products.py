@@ -20,6 +20,7 @@ from redress.topography.forward_model import (
     Cases,
     atmospheric_columns_for_altitude,
     iterative_radiance,
+    prepare_visible_neighbour_geometry,
 )
 
 
@@ -742,7 +743,9 @@ class Model(object):
         ``terrain_reflection_method="neighbour_exitance"`` instead averages
         each neighbour's reflectance times its own irradiance, and
         ``"visible_exitance"`` weights that average by line-of-sight view
-        factors out to ``terrain_visibility_radius_m``.
+        factors out to ``terrain_visibility_radius_m``. Its DEM-only sparse
+        view-factor operator is constructed once and shared by all bands and
+        radiance iterations.
         """
 
         self.toa_rad = xr.Dataset()
@@ -769,6 +772,20 @@ class Model(object):
         band_definitions = self.meta.get("band_definitions")
         if band_definitions is None:
             band_definitions = [None] * len(self.meta["bandlist"])
+
+        visible_neighbour_geometry = None
+        if (
+            terrain_reflection_method == "visible_exitance"
+            and case.terrain_contribution
+        ):
+            first_band = self.meta["bandlist"][0]
+            _, first_topography = self._geometry_for_band(first_band)
+            visible_neighbour_geometry = prepare_visible_neighbour_geometry(
+                first_topography,
+                pixel_resolution_m,
+                terrain_window_width_m=terrain_window_width_m,
+                terrain_visibility_radius_m=terrain_visibility_radius_m,
+            )
 
         for band, wvl, definition, hdr, bhr, direct_albedo, brf in zip(
                 self.meta["bandlist"],
@@ -807,6 +824,7 @@ class Model(object):
                 ),
                 terrain_reflection_method=terrain_reflection_method,
                 terrain_visibility_radius_m=terrain_visibility_radius_m,
+                visible_neighbour_geometry=visible_neighbour_geometry,
                 direct_albedo=direct_albedo,
             )
             (synthetic_toa_radiance,

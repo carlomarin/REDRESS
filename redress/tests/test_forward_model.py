@@ -18,11 +18,14 @@ from redress.topography.forward_model import (
     _solar_irradiance_density,
     build_atmospheric_altitude_lookup,
     iterative_radiance,
+    prepare_visible_neighbour_geometry,
     window_size_from_distance,
 )
 from redress.topography.dem_products import (
+    build_visible_neighbour_geometry,
     effective_zenith_angle,
     horneslope,
+    visible_neighbour_mean,
 )
 from redress.topography.idealized import (
     solve_two_wall_irradiance,
@@ -577,6 +580,58 @@ def _v_valley_geometry(wall_slope_degree, terrain_factor):
         "all_shadows": (("x", "y"), np.ones(shape)),
     })
     return terrain, angles, topography, resolution
+
+
+def test_visible_neighbour_geometry_can_be_reused_without_retracing():
+    _, _, topography, resolution = _v_valley_geometry(45.0, 0.3)
+    radius_pixels = 15
+    values = (
+        1.0
+        + 0.01 * topography["altitude"].data
+        + 0.1 * np.cos(topography["aspect"].data)
+    )
+    geometry = build_visible_neighbour_geometry(
+        topography["altitude"].data,
+        topography["slope"].data,
+        topography["aspect"].data,
+        resolution,
+        radius_pixels,
+    )
+
+    direct_mean, direct_factor = visible_neighbour_mean(
+        values,
+        altitude=topography["altitude"].data,
+        slope=topography["slope"].data,
+        aspect=topography["aspect"].data,
+        pixel_size=resolution,
+        radius_pixels=radius_pixels,
+    )
+    cached_mean, cached_factor = visible_neighbour_mean(
+        values,
+        geometry=geometry,
+    )
+
+    np.testing.assert_allclose(cached_mean, direct_mean, equal_nan=True)
+    np.testing.assert_allclose(cached_factor, direct_factor)
+    np.testing.assert_allclose(cached_factor, geometry.view_factor)
+
+
+def test_visible_neighbour_geometry_uses_the_requested_physical_radius():
+    _, _, topography, resolution = _v_valley_geometry(45.0, 0.3)
+
+    geometry = prepare_visible_neighbour_geometry(
+        topography,
+        resolution,
+        terrain_window_width_m=600.0,
+        terrain_visibility_radius_m=800.0,
+    )
+
+    assert geometry.shape == topography["altitude"].shape
+    assert geometry.operator.shape == (
+        topography["altitude"].size,
+        topography["altitude"].size,
+    )
+    assert geometry.operator.nnz > 0
 
 
 def test_visible_exitance_converges_to_the_two_wall_solution():
