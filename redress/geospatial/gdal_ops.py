@@ -10,6 +10,10 @@ import xarray as xr
 from numpy import nan, pad
 from osgeo import gdal, ogr, osr, gdalconst
 
+gdal.UseExceptions()
+ogr.UseExceptions()
+osr.UseExceptions()
+
 
 def build_poly_from_coords(coord_list):
     """Build an osgeo.ogr polygon object.
@@ -347,3 +351,4 @@ def write_xarray_dset(dataset, outpath, epsg, geotransform):
 
     # Close the output image
     raster = None
+
